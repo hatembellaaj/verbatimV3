@@ -1,0 +1,17 @@
+# Image dev — Vite avec hot-reload (port 5174)
+FROM node:20-alpine
+
+WORKDIR /app
+
+# Cache layer pour deps : on copie d'abord package*.json
+COPY package*.json ./
+RUN npm install
+
+# Le code source est monté en volume via docker-compose, donc pas besoin de COPY ici
+EXPOSE 5174
+
+# DOCKER=1 active le polling fs dans vite.config.js (cf. server.watch.usePolling)
+ENV DOCKER=1
+
+# --host 0.0.0.0 indispensable pour exposer Vite hors du container
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

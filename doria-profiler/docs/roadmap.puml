@@ -1,0 +1,94 @@
+@startgantt
+' DORIA Profiler — Roadmap MVP → v3.0 PROFILER complet
+' Rendu : https://www.plantuml.com/plantuml/  (coller le contenu)
+
+title DORIA Profiler — Roadmap MVP v0.1 → PROFILER v3.0 complet
+caption Phasage du livré (avril 2026) vers le cahier des charges complet
+
+Project starts 2026-04-29
+saturday are closed
+sunday are closed
+
+' ─── v0.1 MVP Verbatim (LIVRÉ) ─────────────────────────────────────────────
+-- v0.1 — MVP Module Verbatim (LIVRÉ) --
+[v0.1 livré] lasts 1 day
+[v0.1 livré] is colored in GoldenRod
+
+' ─── v0.2 — Compléter les couches manquantes (~3 sem) ──────────────────────
+-- v0.2 — Couches 2-4 manquantes (~3 semaines) --
+[Couche 2 — Sentiment fin multi-aspect] lasts 5 days
+[Couche 2 — Sentiment fin multi-aspect] starts at [v0.1 livré]'s end
+[Couche 2 — Sentiment fin multi-aspect] is colored in LightBlue
+
+[Couche 3 — Scoring NPS / RFM / fidélité] lasts 5 days
+[Couche 3 — Scoring NPS / RFM / fidélité] starts at [Couche 2 — Sentiment fin multi-aspect]'s end
+[Couche 3 — Scoring NPS / RFM / fidélité] is colored in LightBlue
+
+[Couche 4 — Synthèse exécutive auto + onglet Insights] lasts 5 days
+[Couche 4 — Synthèse exécutive auto + onglet Insights] starts at [Couche 3 — Scoring NPS / RFM / fidélité]'s end
+[Couche 4 — Synthèse exécutive auto + onglet Insights] is colored in LightBlue
+
+' ─── v0.5 — Robustesse & qualité (~4 sem) ──────────────────────────────────
+-- v0.5 — Robustesse & qualité (~4 semaines) --
+[Cache embeddings (-60 % coût LLM)] lasts 10 days
+[Cache embeddings (-60 % coût LLM)] starts at [Couche 4 — Synthèse exécutive auto + onglet Insights]'s end
+[Cache embeddings (-60 % coût LLM)] is colored in LightSkyBlue
+
+[Resume + retry batch-level + drift detection] lasts 5 days
+[Resume + retry batch-level + drift detection] starts at [Cache embeddings (-60 % coût LLM)]'s end
+[Resume + retry batch-level + drift detection] is colored in LightSkyBlue
+
+[Tests E2E + CI/CD + observabilité] lasts 5 days
+[Tests E2E + CI/CD + observabilité] starts at [Resume + retry batch-level + drift detection]'s end
+[Tests E2E + CI/CD + observabilité] is colored in LightSkyBlue
+
+' ─── v1.0 — Modules complémentaires (~8 sem) ───────────────────────────────
+-- v1.0 — Modules complémentaires (~8 semaines) --
+[Module Churn — score de risque prédictif] lasts 15 days
+[Module Churn — score de risque prédictif] starts at [Tests E2E + CI/CD + observabilité]'s end
+[Module Churn — score de risque prédictif] is colored in MediumPurple
+
+[Module Concurrence — benchmark multi-marques] lasts 15 days
+[Module Concurrence — benchmark multi-marques] starts at [Module Churn — score de risque prédictif]'s end
+[Module Concurrence — benchmark multi-marques] is colored in MediumPurple
+
+[Module Innovation — détection signaux faibles] lasts 10 days
+[Module Innovation — détection signaux faibles] starts at [Module Concurrence — benchmark multi-marques]'s end
+[Module Innovation — détection signaux faibles] is colored in MediumPurple
+
+' ─── v1.5 — Sources externes (~6 sem) ──────────────────────────────────────
+-- v1.5 — Sources externes (~6 semaines) --
+[Scraping Trustpilot / Google Reviews / Avis Vérifiés] lasts 15 days
+[Scraping Trustpilot / Google Reviews / Avis Vérifiés] starts at [Module Innovation — détection signaux faibles]'s end
+[Scraping Trustpilot / Google Reviews / Avis Vérifiés] is colored in Coral
+
+[Transcription audio (Whisper) → pipeline texte] lasts 10 days
+[Transcription audio (Whisper) → pipeline texte] starts at [Scraping Trustpilot / Google Reviews / Avis Vérifiés]'s end
+[Transcription audio (Whisper) → pipeline texte] is colored in Coral
+
+[Connecteurs CRM — Zendesk / Salesforce / HubSpot] lasts 5 days
+[Connecteurs CRM — Zendesk / Salesforce / HubSpot] starts at [Transcription audio (Whisper) → pipeline texte]'s end
+[Connecteurs CRM — Zendesk / Salesforce / HubSpot] is colored in Coral
+
+' ─── v2.0 — Multi-tenant SaaS (~10 sem) ────────────────────────────────────
+-- v2.0 — Multi-tenant SaaS (~10 semaines) --
+[Backend Node + Postgres + migrations] lasts 20 days
+[Backend Node + Postgres + migrations] starts at [Connecteurs CRM — Zendesk / Salesforce / HubSpot]'s end
+[Backend Node + Postgres + migrations] is colored in Crimson
+
+[Auth JWT + Row-Level Security + workspaces] lasts 10 days
+[Auth JWT + Row-Level Security + workspaces] starts at [Backend Node + Postgres + migrations]'s end
+[Auth JWT + Row-Level Security + workspaces] is colored in Crimson
+
+[Dashboard admin + billing usage-based] lasts 20 days
+[Dashboard admin + billing usage-based] starts at [Auth JWT + Row-Level Security + workspaces]'s end
+[Dashboard admin + billing usage-based] is colored in Crimson
+
+' ─── Jalons ────────────────────────────────────────────────────────────────
+[v0.2 release] happens at [Couche 4 — Synthèse exécutive auto + onglet Insights]'s end
+[v0.5 release] happens at [Tests E2E + CI/CD + observabilité]'s end
+[v1.0 release] happens at [Module Innovation — détection signaux faibles]'s end
+[v1.5 release] happens at [Connecteurs CRM — Zendesk / Salesforce / HubSpot]'s end
+[v2.0 GA] happens at [Dashboard admin + billing usage-based]'s end
+
+@endgantt

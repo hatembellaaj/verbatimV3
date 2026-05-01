@@ -1,0 +1,38 @@
+@startwbs
+' DORIA Profiler — Roadmap (vue arborescente / WBS)
+' Variante de roadmap.puml (Gantt) — utile pour discussion de scope.
+
+* DORIA Profiler v3.0
+** v0.1 — MVP Module Verbatim ✓ LIVRÉ (avril 2026)
+*** Pipeline Import → Calibrate → Analyse → Results
+*** Calibration 4 passes (P1=100, P2=200, P3=200, P4=50)
+*** BATCH_SIZE=10, parallélisme 4, seuil confiance 0.5
+*** Couche 1 — Classification thématique (cat / sous-cat / tonalité / confiance)
+*** Couche 5 — Profilage psychographique (PAD, 7 biais, motivations, signaux)
+*** 4 onglets — Catégories / Évolution / Profils & Psy / Items bruts
+*** Stack Vite + React + Recharts, dockerisé, mode démo offline
+** v0.2 — Couches 2-4 manquantes (~3 semaines)
+*** Couche 2 — Sentiment fin multi-aspect & intensité
+*** Couche 3 — Scoring NPS / RFM / fidélité
+*** Couche 4 — Synthèse exécutive auto + onglet Insights
+** v0.5 — Robustesse & qualité (~4 semaines)
+*** Cache embeddings (réduction ~60 % du coût LLM)
+*** Resume + retry batch-level
+*** Re-calibration auto sur drift sémantique
+*** Tests E2E (Playwright) + CI/CD GitHub Actions
+*** Observabilité (Sentry, OpenTelemetry)
+** v1.0 — Modules complémentaires (~8 semaines)
+*** Module Churn — score de risque prédictif par client
+*** Module Concurrence — benchmark multi-marques
+*** Module Innovation — détection signaux faibles, ideas mining
+** v1.5 — Sources externes (~6 semaines)
+*** Scraping Trustpilot / Google Reviews / Avis Vérifiés
+*** Transcription audio (Whisper) → pipeline texte existant
+*** Connecteurs CRM (Zendesk, Salesforce, HubSpot)
+** v2.0 — Multi-tenant SaaS (~10 semaines)
+*** Backend Node/Express + Postgres + migrations
+*** Auth JWT + Row-Level Security
+*** Workspaces multi-clients
+*** Dashboard admin
+*** Billing usage-based (tokens consommés)
+@endwbs
