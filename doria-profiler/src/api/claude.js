@@ -1,16 +1,17 @@
 // Wrapper Anthropic Messages API — spec § II.1
-// Modèle par défaut surchargeable via VITE_ANTHROPIC_MODEL.
-// Fallback MOCK_AI si pas de clé API (utile pour dev offline).
+// Le frontend appelle un proxy backend en same-origin (/api/messages) qui injecte la clé.
+// La clé API n'est JAMAIS exposée dans le bundle JS — elle vit côté serveur (service `api`).
+// Mode mock activable via VITE_USE_MOCK=true (utile pour dev offline).
 
 import { logApi, logErr, logWarn, logOk, logLlm } from "../lib/logger.js";
 
-const API_KEY = import.meta.env.VITE_ANTHROPIC_API_KEY || "";
-export const MOCK_AI = !API_KEY;
+export const MOCK_AI = String(import.meta.env.VITE_USE_MOCK || "").toLowerCase() === "true";
 
 // Modèle par défaut — surchargeable via VITE_ANTHROPIC_MODEL dans .env.local
 // Modèles valides à fin avril 2026 : claude-sonnet-4-6, claude-opus-4-6, claude-haiku-4-5-20251001
 const DEFAULT_MODEL = import.meta.env.VITE_ANTHROPIC_MODEL || "claude-sonnet-4-6";
-const ENDPOINT = "https://api.anthropic.com/v1/messages";
+// Endpoint relatif → routé par nginx vers le proxy Node, qui ajoute x-api-key + anthropic-version.
+const ENDPOINT = "/api/messages";
 
 // Compteur de tokens approximatif pour debug/coût
 let _tokensIn = 0, _tokensOut = 0, _calls = 0;
@@ -34,7 +35,7 @@ export async function callClaude(prompt, opts = {}) {
   } = opts;
 
   if (MOCK_AI) {
-    logLlm(`[${label}] MOCK (pas de clé API) — réponse simulée`);
+    logLlm(`[${label}] MOCK (VITE_USE_MOCK=true) — réponse simulée`);
     return mockResponse(prompt);
   }
 
@@ -52,14 +53,10 @@ export async function callClaude(prompt, opts = {}) {
   let lastErr = null;
   for (let attempt = 0; attempt <= maxRetries; attempt++) {
     try {
+      // Le proxy Node ajoute x-api-key + anthropic-version. On envoie juste le payload.
       const res = await fetch(ENDPOINT, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": API_KEY,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
-        },
+        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 

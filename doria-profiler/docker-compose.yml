@@ -1,7 +1,12 @@
 # DORIA Profiler — orchestration Docker
-# Deux services activables via profiles :
-#   docker compose --profile dev up      → hot-reload sur http://localhost:5174
-#   docker compose --profile prod up     → build prod servi par nginx sur http://localhost:8080
+# Trois profils :
+#   docker compose --profile dev up                  → hot-reload sur http://localhost:5174
+#   docker compose --profile prod up --build         → web (nginx) + api (proxy Node)
+#                                                       sur http://localhost:${WEB_PORT:-8080}
+#
+# Variables d'env attendues (.env à la racine, ou shell) :
+#   ANTHROPIC_API_KEY=sk-ant-...   (obligatoire pour le profil prod, lu par le proxy)
+#   WEB_PORT=8080                  (optionnel, défaut 8080 — port public du frontend)
 
 services:
   # ─────────────────────────────────────────────────────────────────────────
@@ -27,17 +32,33 @@ services:
     restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Service PROD — bundle Vite servi par nginx
-  # La clé API est figée dans le bundle JS au moment du build.
+  # Service API — proxy Node Express qui détient la clé Anthropic
+  # Pas exposé publiquement : seul `web` y accède via le réseau Docker interne.
   # ─────────────────────────────────────────────────────────────────────────
-  prod:
+  api:
+    profiles: ["prod"]
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: doria-profiler-api
+    environment:
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      PORT: "3001"
+    expose:
+      - "3001"
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Service WEB — bundle Vite servi par nginx, route /api/ vers le service api
+  # ─────────────────────────────────────────────────────────────────────────
+  web:
     profiles: ["prod"]
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        VITE_ANTHROPIC_API_KEY: ${VITE_ANTHROPIC_API_KEY:-}
-    container_name: doria-profiler-prod
+    container_name: doria-profiler-web
+    depends_on:
+      - api
     ports:
-      - "8080:80"
+      - "${WEB_PORT:-8080}:80"
     restart: unless-stopped
