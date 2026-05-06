@@ -8,8 +8,8 @@ import {
   meanNormalize,
 } from "../lib/classifier.js";
 import { callClaude, MOCK_AI } from "../api/claude.js";
-import { promptGenerateAnchors } from "../lib/prompts.js";
-import { parseJSON } from "../lib/utils.js";
+import { promptGenerateAnchorsForCluster } from "../lib/prompts.js";
+import { parseJSON, pLimit } from "../lib/utils.js";
 import { logInfo, logOk, logErr, logWarn, logApi, logDbg, logLlm } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
 import {
@@ -60,7 +60,7 @@ export default function PhaseClassify({
         throw new Error(`Service embeddings injoignable (${e.message}). Vérifie que le container 'embed' tourne.`);
       }
 
-      // ─── 2. Génération des ancres LLM (one-shot, mis en cache) ─────────
+      // ─── 2. Génération des ancres LLM — UN APPEL PAR CLUSTER (parallélisé) ─
       let workingTaxo = taxo;
       const hasAnchors = (workingTaxo?.categories || []).every(
         (c) => Array.isArray(c.anchors) && c.anchors.length > 0
@@ -70,33 +70,50 @@ export default function PhaseClassify({
           throw new Error("Génération d'ancres impossible en mode MOCK (clé API Anthropic requise)");
         }
         setStage("anchors");
-        logLlm("[anchors] Génération des ancres sémantiques par LLM (one-shot)…");
+        const N = workingTaxo.categories.length;
+        logLlm(`[anchors] Génération par LLM — un appel par cluster (${N} clusters, concurrency=2)…`);
         const tAnch = Date.now();
-        const raw = await callClaude(promptGenerateAnchors(workingTaxo, contexte, 5, 4), {
-          label: "anchors",
-          maxTokens: 4000,
-        });
-        const parsed = parseJSON(raw);
-        if (!parsed?.anchors?.length) throw new Error("Réponse LLM ancres invalide");
+        setProgress({ done: 0, total: N });
 
-        // Fusion des ancres dans la taxo (par nom de cluster)
-        const anchorByName = new Map(parsed.anchors.map((a) => [a.cluster, a]));
-        const updatedCategories = workingTaxo.categories.map((c) => {
-          const match = anchorByName.get(c.name);
-          if (!match) {
-            logWarn(`[anchors] Pas d'ancres reçues pour cluster "${c.name}"`);
-            return c;
+        const limit = pLimit(2);
+        let done = 0;
+        const failures = [];
+
+        const tasks = workingTaxo.categories.map((c, idx) => limit(async () => {
+          const tStart = Date.now();
+          try {
+            const raw = await callClaude(
+              promptGenerateAnchorsForCluster(c, contexte, 5, 4),
+              { label: `anchors[${idx}]`, maxTokens: 1500 },
+            );
+            const parsed = parseJSON(raw);
+            if (!parsed) throw new Error(`JSON invalide (réponse: ${raw?.slice(0, 200) || "vide"})`);
+            const examples = Array.isArray(parsed.examples) ? parsed.examples : [];
+            const subAnchors = {};
+            for (const sub of (parsed.subclusters || [])) {
+              if (Array.isArray(sub.examples)) subAnchors[sub.name] = sub.examples;
+            }
+            done++;
+            setProgress({ done, total: N });
+            const subCount = Object.values(subAnchors).reduce((s, a) => s + a.length, 0);
+            logOk(`[anchors] cluster "${c.name}" : ${examples.length} ancres + ${subCount} sous-ancres en ${Date.now() - tStart}ms`);
+            // Échantillon de 2 ancres dans les logs
+            const preview = examples.slice(0, 2).map((a) => `"${a.slice(0, 60)}"`).join(" · ");
+            logDbg(`[anchors] "${c.name}" → ${preview || "(vide)"}`);
+            return { ...c, anchors: examples, subAnchors };
+          } catch (e) {
+            done++;
+            setProgress({ done, total: N });
+            logErr(`[anchors] cluster "${c.name}" ÉCHEC : ${e.message}`);
+            failures.push(c.name);
+            return c; // on garde le cluster sans ancres
           }
-          const subAnchors = {};
-          for (const sub of (match.subclusters || [])) {
-            if (Array.isArray(sub.examples)) subAnchors[sub.name] = sub.examples;
-          }
-          return {
-            ...c,
-            anchors: Array.isArray(match.examples) ? match.examples : [],
-            subAnchors,
-          };
-        });
+        }));
+
+        const updatedCategories = await Promise.all(tasks);
+        if (failures.length === N) {
+          throw new Error(`Tous les appels d'ancres ont échoué (${N}/${N})`);
+        }
         workingTaxo = {
           ...workingTaxo,
           categories: updatedCategories,
@@ -106,12 +123,10 @@ export default function PhaseClassify({
         const totalAnchors = updatedCategories.reduce(
           (s, c) => s + (c.anchors?.length || 0) + Object.values(c.subAnchors || {}).reduce((ss, arr) => ss + arr.length, 0), 0,
         );
-        logOk(`[anchors] ${totalAnchors} ancres générées en ${Date.now() - tAnch}ms (${updatedCategories.length} clusters)`);
-        // Aperçu : 2 premières ancres de chaque cluster
-        updatedCategories.forEach((c) => {
-          const sample = (c.anchors || []).slice(0, 2).map((a) => `"${a}"`).join(" · ");
-          logDbg(`[anchors] cluster "${c.name}" → ${sample || "(aucune)"}`);
-        });
+        if (failures.length > 0) {
+          logWarn(`[anchors] ${failures.length} cluster(s) sans ancres : ${failures.join(", ")} (fallback nom seul)`);
+        }
+        logOk(`[anchors] ${totalAnchors} ancres totales générées en ${Date.now() - tAnch}ms`);
       } else {
         logInfo(`[anchors] Ancres déjà présentes dans la taxo (version ${workingTaxo.anchorsVersion || "?"}), réutilisation`);
       }

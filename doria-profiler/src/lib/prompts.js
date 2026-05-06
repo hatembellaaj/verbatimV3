@@ -164,43 +164,37 @@ Renvoie STRICTEMENT ce JSON (un objet items contenant un tableau, pas de prose) 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ANCRES SÉMANTIQUES — un appel one-shot pour générer N phrases-exemples par
-// cluster et sous-cluster. Ces phrases servent d'ancres pour les embeddings :
-// l'embedding du cluster devient le centroide des embeddings de ses ancres,
-// ce qui dilue les mots ultra-fréquents du domaine et booste la discrimination.
-// Coût : ~$0.05 par taxonomie (one-shot, mis en cache dans la taxo).
+// ANCRES SÉMANTIQUES — UN APPEL PAR CLUSTER (plus robuste qu'un appel monolithique
+// qui sature les max_tokens). Génère nPerCluster phrases pour le cluster + nPerSub
+// par sous-cluster. Plusieurs clusters peuvent être traités en parallèle.
+// Ces phrases servent d'ancres pour les embeddings : l'embedding du cluster
+// devient le centroide de ses ancres, ce qui dilue les mots ultra-fréquents.
 // ─────────────────────────────────────────────────────────────────────────────
-export function promptGenerateAnchors(taxo, contexte = "", nPerCluster = 5, nPerSub = 4) {
-  // Liste compacte de la taxo pour le prompt
-  const taxoList = (taxo?.categories || []).map((c) => ({
-    cluster: c.name,
-    sous_clusters: (c.subCategories || []),
-  }));
+export function promptGenerateAnchorsForCluster(cluster, contexte = "", nPerCluster = 5, nPerSub = 4) {
+  const subList = (cluster.subCategories || [])
+    .map((s) => `  - ${s}`)
+    .join("\n") || "  (aucun sous-cluster)";
 
   return `Tu es analyste sémantique senior${contexte ? ` (domaine : ${contexte})` : ""}.
 
-Pour chaque cluster et sous-cluster ci-dessous, génère des PHRASES-EXEMPLES typiques qui pourraient apparaître dans un verbatim client. Ces phrases serviront d'ancres pour un système de classification par similarité sémantique.
+Pour le CLUSTER et ses SOUS-CLUSTERS ci-dessous, génère des phrases-exemples typiques qui pourraient apparaître dans un verbatim client. Ces phrases serviront d'ancres pour la similarité sémantique.
 
-CONTRAINTES STRICTES (respecte chacune) :
-1. Phrases COURTES et NATURELLES (8 à 25 mots), à la première personne ou impersonnelles, comme dans un avis client réel.
-2. Couvre DES ANGLES DIFFÉRENTS : positif, négatif, neutre, formel, familier, court, détaillé.
-3. ÉVITE absolument les mots ultra-fréquents du domaine qui apparaissent partout dans les verbatims (ex : "parc", "Asterix", "journée", "super"). Vise un vocabulaire DISCRIMINANT du sens du cluster.
-4. N'utilise PAS le nom littéral du cluster ou du sous-cluster dans la phrase.
-5. ${nPerCluster} phrases par cluster + ${nPerSub} phrases par sous-cluster.
+CONTRAINTES STRICTES :
+1. Phrases COURTES et NATURELLES (8 à 25 mots), comme dans un avis client réel.
+2. Couvre des angles différents : positif, négatif, neutre, formel, familier.
+3. ÉVITE les mots ultra-fréquents du domaine ("parc", "Asterix", "journée", "super", "génial") qui n'aident pas à discriminer.
+4. N'utilise PAS le nom littéral du cluster/sous-cluster dans la phrase.
+5. Exactement ${nPerCluster} phrases pour le cluster, ${nPerSub} pour chaque sous-cluster.
 
-TAXONOMIE :
-${JSON.stringify(taxoList, null, 2)}
+CLUSTER : "${cluster.name}"
+SOUS-CLUSTERS :
+${subList}
 
-Renvoie STRICTEMENT ce JSON (aucune prose, pas de markdown) :
+Renvoie STRICTEMENT ce JSON (aucune prose, aucun markdown) :
 {
-  "anchors": [
-    {
-      "cluster": "<nom du cluster, identique à l'entrée>",
-      "examples": ["phrase 1", "phrase 2", "..."],
-      "subclusters": [
-        {"name": "<nom du sous-cluster>", "examples": ["...", "..."]}
-      ]
-    }
+  "examples": ["phrase 1", "phrase 2", "..."],
+  "subclusters": [
+    {"name": "<nom exact du sous-cluster>", "examples": ["...", "..."]}
   ]
 }`;
 }
