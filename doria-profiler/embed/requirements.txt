@@ -2,3 +2,6 @@ fastapi==0.110.1
 uvicorn[standard]==0.29.0
 sentence-transformers==2.7.0
 pydantic==2.7.1
+# NumPy 2.x casse l'ABI de torch 2.2 → "RuntimeError: Numpy is not available"
+# au moment de model.encode(). On reste sur NumPy 1.x jusqu'à passer à torch 2.4+.
+numpy<2
