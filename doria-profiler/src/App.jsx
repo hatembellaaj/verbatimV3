@@ -3,6 +3,7 @@
 // Persistance via localStorage (tout sauf le fichier brut)
 import React, { useState, useEffect } from "react";
 import PhaseImport from "./components/PhaseImport.jsx";
+import PhaseDiscover from "./components/PhaseDiscover.jsx";
 import PhaseCalibrate from "./components/PhaseCalibrate.jsx";
 import PhaseAnalyse from "./components/PhaseAnalyse.jsx";
 import PhaseResults from "./components/PhaseResults.jsx";
@@ -13,12 +14,13 @@ import {
   panelStyle, buttonSecondary,
 } from "./lib/theme.js";
 
-const PHASES = ["import", "calibrate", "analyse", "results"];
+const PHASES = ["import", "discover", "calibrate", "analyse", "results"];
 const PHASE_LABELS = {
   import: "1. Import",
-  calibrate: "2. Calibration",
-  analyse: "3. Analyse",
-  results: "4. Résultats",
+  discover: "2. Découverte",
+  calibrate: "3. Calibration",
+  analyse: "4. Analyse",
+  results: "5. Résultats",
 };
 
 export default function App() {
@@ -75,7 +77,8 @@ export default function App() {
         </div>
         <PhaseStepper phase={phase} setPhase={setPhase} canJump={{
           import: true,
-          calibrate: items.length > 0,
+          discover: items.length > 0,
+          calibrate: items.length > 0 && !!taxo,
           analyse: !!taxo && !!psycho,
           results: enriched.length > 0,
         }} />
@@ -95,8 +98,20 @@ export default function App() {
             onValidate={({ items, contexte, mapping, stats }) => {
               setItems(items);
               setContexte(contexte || "");
+              setPhase("discover");
+            }}
+          />
+        )}
+        {phase === "discover" && (
+          <PhaseDiscover
+            items={items}
+            contexte={contexte}
+            initialTaxo={taxo}
+            onValidate={({ taxo }) => {
+              setTaxo(taxo);
               setPhase("calibrate");
             }}
+            onBack={() => setPhase("import")}
           />
         )}
         {phase === "calibrate" && (
