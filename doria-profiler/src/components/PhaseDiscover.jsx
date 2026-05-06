@@ -248,21 +248,27 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
         </div>
       )}
 
-      {/* ── Footer nav ─────────────────────────────────────────────────────── */}
-      <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
+      {/* ── Footer nav + choix du mode de classification ──────────────────── */}
+      <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
         <button onClick={onBack} style={buttonSecondary}>← Retour import</button>
-        {taxo && (
-          <button
-            onClick={() => onValidate({ taxo })}
-            disabled={!canValidate}
-            style={{
-              ...buttonPrimary,
-              opacity: canValidate ? 1 : 0.45,
-              cursor: canValidate ? "pointer" : "not-allowed",
-            }}
-          >
-            Valider l'arbre →
-          </button>
+        {taxo && canValidate && (
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <span style={{ fontSize: 11, color: MUTED, marginRight: 4 }}>Continuer en :</span>
+            <button
+              onClick={() => onValidate({ taxo, mode: "embed" })}
+              style={buttonSecondary}
+              title="Classification locale par embeddings + BM25, gratuite, rapide"
+            >
+              ⚡ Embeddings (local)
+            </button>
+            <button
+              onClick={() => onValidate({ taxo, mode: "llm" })}
+              style={buttonPrimary}
+              title="Calibration P1-P4 puis analyse LLM complète (PAD, biais, profils)"
+            >
+              🤖 Analyse LLM →
+            </button>
+          </div>
         )}
       </div>
       {taxo && !canValidate && (

@@ -25,6 +25,16 @@ RUN printf '%s\n' \
     '    index index.html;' \
     '    client_max_body_size 10m;' \
     '' \
+    '    # Service embeddings local (Solon FR) — doit être AVANT location /api/' \
+    '    location /api/embed/ {' \
+    '        proxy_pass http://embed:8000/;' \
+    '        proxy_http_version 1.1;' \
+    '        proxy_set_header Host $host;' \
+    '        proxy_read_timeout 180s;' \
+    '        proxy_send_timeout 180s;' \
+    '        client_max_body_size 20m;' \
+    '    }' \
+    '' \
     '    # Proxy vers le service Node qui détient la clé Anthropic' \
     '    location /api/ {' \
     '        proxy_pass http://api:3001/api/;' \

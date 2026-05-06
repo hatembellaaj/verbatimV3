@@ -6,6 +6,7 @@ import PhaseImport from "./components/PhaseImport.jsx";
 import PhaseDiscover from "./components/PhaseDiscover.jsx";
 import PhaseCalibrate from "./components/PhaseCalibrate.jsx";
 import PhaseAnalyse from "./components/PhaseAnalyse.jsx";
+import PhaseClassify from "./components/PhaseClassify.jsx";
 import PhaseResults from "./components/PhaseResults.jsx";
 import { save, load, clearAll } from "./lib/storage.js";
 import { MOCK_AI } from "./api/claude.js";
@@ -14,17 +15,24 @@ import {
   panelStyle, buttonSecondary,
 } from "./lib/theme.js";
 
-const PHASES = ["import", "discover", "calibrate", "analyse", "results"];
+// Deux flux possibles après "discover" :
+//   LLM      : discover → calibrate → analyse → results
+//   Embed    : discover → classify → results
+// Le stepper affiche dynamiquement les bonnes étapes selon `mode`.
+const PHASES_LLM = ["import", "discover", "calibrate", "analyse", "results"];
+const PHASES_EMBED = ["import", "discover", "classify", "results"];
 const PHASE_LABELS = {
   import: "1. Import",
   discover: "2. Découverte",
   calibrate: "3. Calibration",
-  analyse: "4. Analyse",
-  results: "5. Résultats",
+  analyse: "4. Analyse LLM",
+  classify: "3. Classification",
+  results: "Résultats",
 };
 
 export default function App() {
   const [phase, setPhase] = useState("import");
+  const [mode, setMode] = useState("llm"); // 'llm' | 'embed' — choisi à la fin de Découverte
   const [items, setItems] = useState([]);          // items après mapping CSV
   const [enriched, setEnriched] = useState([]);    // items après analyse LLM
   const [taxo, setTaxo] = useState(null);
@@ -37,6 +45,7 @@ export default function App() {
     const saved = load("session", null);
     if (saved) {
       setPhase(saved.phase || "import");
+      setMode(saved.mode || "llm");
       setItems(saved.items || []);
       setEnriched(saved.enriched || []);
       setTaxo(saved.taxo || null);
@@ -49,19 +58,22 @@ export default function App() {
   // Persistance à chaque changement
   useEffect(() => {
     if (!hydrated) return;
-    save("session", { phase, items, enriched, taxo, psycho, contexte });
-  }, [hydrated, phase, items, enriched, taxo, psycho, contexte]);
+    save("session", { phase, mode, items, enriched, taxo, psycho, contexte });
+  }, [hydrated, phase, mode, items, enriched, taxo, psycho, contexte]);
 
   function reset() {
     if (!confirm("Effacer toutes les données et recommencer un nouveau projet ?")) return;
     clearAll();
     setPhase("import");
+    setMode("llm");
     setItems([]);
     setEnriched([]);
     setTaxo(null);
     setPsycho(null);
     setContexte("");
   }
+
+  const PHASES = mode === "embed" ? PHASES_EMBED : PHASES_LLM;
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: TEXT, fontSize: 14 }}>
@@ -75,11 +87,12 @@ export default function App() {
             <span style={{ color: MUTED, fontWeight: 400, fontSize: 11, marginLeft: 8 }}>v3.0 — Module Verbatim</span>
           </div>
         </div>
-        <PhaseStepper phase={phase} setPhase={setPhase} canJump={{
+        <PhaseStepper phases={PHASES} phase={phase} setPhase={setPhase} canJump={{
           import: true,
           discover: items.length > 0,
           calibrate: items.length > 0 && !!taxo,
           analyse: !!taxo && !!psycho,
+          classify: items.length > 0 && !!taxo,
           results: enriched.length > 0,
         }} />
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -107,9 +120,10 @@ export default function App() {
             items={items}
             contexte={contexte}
             initialTaxo={taxo}
-            onValidate={({ taxo }) => {
+            onValidate={({ taxo, mode: chosenMode }) => {
               setTaxo(taxo);
-              setPhase("calibrate");
+              setMode(chosenMode || "llm");
+              setPhase(chosenMode === "embed" ? "classify" : "calibrate");
             }}
             onBack={() => setPhase("import")}
           />
@@ -141,12 +155,26 @@ export default function App() {
             onBack={() => setPhase("calibrate")}
           />
         )}
+        {phase === "classify" && (
+          <PhaseClassify
+            items={items}
+            taxo={taxo}
+            contexte={contexte}
+            initialResults={enriched.length > 0 ? enriched : null}
+            onResultsChange={setEnriched}
+            onValidate={({ items: enr }) => {
+              setEnriched(enr);
+              setPhase("results");
+            }}
+            onBack={() => setPhase("discover")}
+          />
+        )}
         {phase === "results" && (
           <PhaseResults
             items={enriched}
             taxo={taxo}
             psycho={psycho}
-            onBack={() => setPhase("analyse")}
+            onBack={() => setPhase(mode === "embed" ? "classify" : "analyse")}
             onReset={reset}
           />
         )}
@@ -159,12 +187,12 @@ export default function App() {
   );
 }
 
-function PhaseStepper({ phase, setPhase, canJump }) {
+function PhaseStepper({ phases, phase, setPhase, canJump }) {
   return (
     <div style={{ display: "flex", gap: 4, fontSize: 11 }}>
-      {PHASES.map((p, i) => {
+      {phases.map((p, i) => {
         const current = phase === p;
-        const reached = PHASES.indexOf(phase) >= i;
+        const reached = phases.indexOf(phase) >= i;
         const enabled = canJump[p];
         return (
           <button
