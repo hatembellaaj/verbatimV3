@@ -33,19 +33,30 @@ export default function PhaseResults({ items, taxo, psycho, onBack, onReset }) {
     const headers = [
       "id", "verbatim", "note", "date", "profil", "source",
       "category", "subCategory", "tonality", "confidence",
+      // Multi-label : tableau aplati en pipe-séparé
+      "all_categories", "all_subcategories", "labels_count",
       "psychoProfile", "valence", "arousal", "dominance",
-      "biais", "motivations", "signaux", "isUnclassified",
+      "biais", "motivations", "signaux", "classifier", "isUnclassified",
     ];
-    const rows = [headers, ...items.map((i) => [
-      i.id, i.verbatim, i.note ?? "", i.date ?? "", i.profil ?? "", i.source ?? "",
-      i.category ?? "", i.subCategory ?? "", i.tonality ?? "", i.confidence ?? 0,
-      i.psychoProfile ?? "",
-      i.pad?.valence ?? "", i.pad?.arousal ?? "", i.pad?.dominance ?? "",
-      (i.biais || []).join("|"),
-      (i.motivations || []).join("|"),
-      (i.signaux || []).join("|"),
-      i.isUnclassified ? "1" : "0",
-    ])];
+    const rows = [headers, ...items.map((i) => {
+      const labels = Array.isArray(i.categories) && i.categories.length
+        ? i.categories
+        : [{ cluster_label: i.category, subcluster_label: i.subCategory }];
+      return [
+        i.id, i.verbatim, i.note ?? "", i.date ?? "", i.profil ?? "", i.source ?? "",
+        i.category ?? "", i.subCategory ?? "", i.tonality ?? "", i.confidence ?? 0,
+        labels.map((l) => l.cluster_label || "").join("|"),
+        labels.map((l) => l.subcluster_label || "").join("|"),
+        labels.length,
+        i.psychoProfile ?? "",
+        i.pad?.valence ?? "", i.pad?.arousal ?? "", i.pad?.dominance ?? "",
+        (i.biais || []).join("|"),
+        (i.motivations || []).join("|"),
+        (i.signaux || []).join("|"),
+        i._classifier || "llm",
+        i.isUnclassified ? "1" : "0",
+      ];
+    })];
     const ts = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-");
     downloadCSV(`doria_profiler_${ts}.csv`, rows);
   }
@@ -425,7 +436,17 @@ function TabItems({ items, onDrill }) {
                 }}
               >
                 <td style={{ padding: 8, color: TEXT, maxWidth: 400, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{i.verbatim}</td>
-                <td style={{ padding: 8, color: MUTED }}>{i.category}</td>
+                <td style={{ padding: 8, color: MUTED }}>
+                  {i.category}
+                  {Array.isArray(i.categories) && i.categories.length > 1 && (
+                    <span title={i.categories.map((c) => c.cluster_label).join(" + ")} style={{
+                      marginLeft: 6, padding: "1px 6px", background: "rgba(34,211,238,0.15)",
+                      color: TEAL, borderRadius: 999, fontSize: 10, fontWeight: 600,
+                    }}>
+                      +{i.categories.length - 1}
+                    </span>
+                  )}
+                </td>
                 <td style={{ padding: 8, color: MUTED }}>{i.subCategory || "—"}</td>
                 <td style={{ padding: 8, color: i.tonality === "positif" ? POS : i.tonality === "négatif" ? NEG : NEUTRAL }}>
                   {i.tonality}
@@ -473,7 +494,7 @@ function DrillPanel({ item, onClose }) {
           "{item.verbatim}"
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
-          <Field label="Catégorie" value={item.category} />
+          <Field label="Catégorie principale" value={item.category} />
           <Field label="Sous-catégorie" value={item.subCategory} />
           <Field label="Tonalité" value={item.tonality} color={item.tonality === "positif" ? POS : item.tonality === "négatif" ? NEG : NEUTRAL} />
           <Field label="Confiance" value={(item.confidence ?? 0).toFixed(2)} />
@@ -482,6 +503,37 @@ function DrillPanel({ item, onClose }) {
           <Field label="Date" value={item.date ?? "—"} />
           <Field label="Source" value={item.source ?? "—"} />
         </div>
+        {Array.isArray(item.categories) && item.categories.length > 1 && (
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 11, color: MUTED, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+              Catégories multiples ({item.categories.length})
+            </div>
+            <div style={{ display: "grid", gap: 6 }}>
+              {item.categories.map((c, idx) => (
+                <div key={idx} style={{
+                  display: "flex", justifyContent: "space-between", alignItems: "center",
+                  fontSize: 12, color: TEXT, padding: "6px 10px", background: PANEL_2,
+                  border: `1px solid ${BORDER}`, borderRadius: 8,
+                }}>
+                  <span>
+                    <span style={{ color: idx === 0 ? GOLD : TEAL, fontWeight: 600 }}>
+                      {c.cluster_label}
+                    </span>
+                    {c.subcluster_label && <span style={{ color: MUTED }}> › {c.subcluster_label}</span>}
+                  </span>
+                  <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: MUTED }}>
+                    cluster {c.confidence_cluster?.toFixed(2)} · sub {c.confidence_subcluster?.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {item._classifier && (
+          <div style={{ marginTop: 8, fontSize: 10, color: MUTED }}>
+            Classifié par : <code>{item._classifier}</code>
+          </div>
+        )}
         {item.pad && (
           <div style={{ marginTop: 12 }}>
             <div style={{ fontSize: 11, color: MUTED, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>PAD</div>
@@ -625,26 +677,51 @@ function ContextChat({ stats, taxo, psycho }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Aggregation helpers — produit des stats à partir des items enrichis
+// Helper multi-label : retourne TOUTES les paires (category, subCategory) d'un item.
+// Si l'item a un `categories[]` (mode embeddings multi-label), on dépile.
+// Sinon fallback sur `category` / `subCategory` (mode LLM legacy).
+// ─────────────────────────────────────────────────────────────────────────────
+function expandLabels(item) {
+  if (Array.isArray(item.categories) && item.categories.length > 0) {
+    return item.categories.map((c) => ({
+      category: c.cluster_label || "Autre",
+      subCategory: c.subcluster_label || null,
+    }));
+  }
+  return [{
+    category: item.category || "Autre",
+    subCategory: item.subCategory || null,
+  }];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Aggregation helpers — produit des stats à partir des items enrichis.
+// Multi-label aware : chaque verbatim contribue à CHACUNE de ses catégories.
+// Conséquence : la somme des `count` par catégorie peut dépasser `total` ;
+// on expose donc aussi `pctOfCorpus` (= count / total, peut sommer >100%).
 // ─────────────────────────────────────────────────────────────────────────────
 function buildStats(items, taxo, psycho) {
   const total = items.length;
 
-  // Par catégorie
+  // Par catégorie — chaque verbatim ajoute 1 à chacune de ses catégories
   const catMap = {};
   items.forEach((i) => {
-    const c = i.category || "Autre";
-    if (!catMap[c]) catMap[c] = { name: c, count: 0, pos: 0, neg: 0, neutre: 0, mixte: 0, subDist: {} };
-    catMap[c].count++;
-    catMap[c][i.tonality || "neutre"] = (catMap[c][i.tonality || "neutre"] || 0) + 1;
-    const sub = i.subCategory || "—";
-    catMap[c].subDist[sub] = (catMap[c].subDist[sub] || 0) + 1;
+    const labels = expandLabels(i);
+    for (const { category, subCategory } of labels) {
+      const c = category;
+      if (!catMap[c]) catMap[c] = { name: c, count: 0, pos: 0, neg: 0, neutre: 0, mixte: 0, subDist: {} };
+      catMap[c].count++;
+      catMap[c][i.tonality || "neutre"] = (catMap[c][i.tonality || "neutre"] || 0) + 1;
+      const sub = subCategory || "—";
+      catMap[c].subDist[sub] = (catMap[c].subDist[sub] || 0) + 1;
+    }
   });
   const byCategory = Object.values(catMap)
     .map((c) => ({
       ...c,
       pctPos: c.count ? Math.round((c.pos / c.count) * 100) : 0,
       pctNeg: c.count ? Math.round((c.neg / c.count) * 100) : 0,
+      pctOfCorpus: total ? Math.round((c.count / total) * 100) : 0,
       subDist: Object.fromEntries(Object.entries(c.subDist).sort((a, b) => b[1] - a[1])),
     }))
     .sort((a, b) => b.count - a.count);
@@ -681,7 +758,7 @@ function buildStats(items, taxo, psycho) {
     .map(([name, count]) => ({ name, count }))
     .sort((a, b) => b.count - a.count);
 
-  // Timeline mensuelle
+  // Timeline mensuelle (multi-label : chaque verbatim incrémente toutes ses catégories)
   const tlMap = {}; // month → { positif, neutre, négatif, mixte, total }
   const tlCatMap = {}; // month → { cat: count }
   items.forEach((i) => {
@@ -692,21 +769,24 @@ function buildStats(items, taxo, psycho) {
     tlMap[m][i.tonality || "neutre"] = (tlMap[m][i.tonality || "neutre"] || 0) + 1;
 
     if (!tlCatMap[m]) tlCatMap[m] = { month: m };
-    const c = i.category || "Autre";
-    tlCatMap[m][c] = (tlCatMap[m][c] || 0) + 1;
+    for (const { category } of expandLabels(i)) {
+      tlCatMap[m][category] = (tlCatMap[m][category] || 0) + 1;
+    }
   });
   const timeline = Object.values(tlMap).sort((a, b) => a.month.localeCompare(b.month));
   const timelineByCat = Object.values(tlCatMap).sort((a, b) => a.month.localeCompare(b.month));
 
   // Tension matrix : profil × catégorie → {count, neg}
+  // Multi-label : un verbatim incrémente toutes ses paires (profil, catégorie)
   const tensionMatrix = {};
   items.forEach((i) => {
     const p = i.psychoProfile || "Indéterminé";
-    const c = i.category || "Autre";
-    if (!tensionMatrix[p]) tensionMatrix[p] = {};
-    if (!tensionMatrix[p][c]) tensionMatrix[p][c] = { count: 0, neg: 0 };
-    tensionMatrix[p][c].count++;
-    if (i.tonality === "négatif") tensionMatrix[p][c].neg++;
+    for (const { category: c } of expandLabels(i)) {
+      if (!tensionMatrix[p]) tensionMatrix[p] = {};
+      if (!tensionMatrix[p][c]) tensionMatrix[p][c] = { count: 0, neg: 0 };
+      tensionMatrix[p][c].count++;
+      if (i.tonality === "négatif") tensionMatrix[p][c].neg++;
+    }
   });
 
   return {

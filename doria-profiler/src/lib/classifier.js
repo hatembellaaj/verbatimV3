@@ -146,16 +146,23 @@ export async function fetchEmbeddings(texts, { batchSize = 128, onProgress = nul
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Classification d'UN verbatim — retourne cluster + sous-cluster + confidences.
+// Classification MULTI-LABEL d'UN verbatim.
+// Retourne :
+//   - primary : top-1 label (cluster + sous-cluster + confidences)
+//   - labels  : tous les labels qui dépassent le seuil ET sont assez proches du top
+//               (combined ≥ ratio × top_combined), capés à maxLabels
+//   - debug   : breakdown complet des scores (utile pour les logs)
 // Args :
 //   vEmb : embedding du verbatim (array)
-//   vTokens : tokens du verbatim (déjà tokenisé)
+//   vTokens : tokens du verbatim
 //   protos : sortie de buildPrototypes()
 //   clusterEmbs : embeddings des protos cluster (même ordre que protos)
-//   subEmbs    : embeddings des protos sous-cluster, plat, indexé via subEmbIdx[ci][si]
+//   subEmbsByCluster : embeddings sous-cluster groupés par cluster
 //   bm25Cluster, bm25SubByCluster : index BM25 pré-calculés
 //   weights : { embed, bm25 } (somme = 1)
-//   threshold : seuil UNSURE sur le score combiné [0,1]
+//   threshold : seuil absolu UNSURE sur le score combiné [0,1]
+//   ratio    : ratio min vs top pour qu'un label secondaire soit retenu (0.85 par défaut)
+//   maxLabels : nombre max de labels par verbatim (3 par défaut)
 // ───────────────────────────────────────────────────────────────────────────
 export function classifyVerbatim({
   vEmb, vTokens, protos,
@@ -163,59 +170,102 @@ export function classifyVerbatim({
   bm25Cluster, bm25SubByCluster,
   weights = { embed: 0.7, bm25: 0.3 },
   threshold = 0.5,
+  ratio = 0.85,
+  maxLabels = 3,
 }) {
   if (!protos.length) {
-    return { cluster: null, subcluster: null, confidence_cluster: 0, confidence_subcluster: 0 };
+    return {
+      primary: null,
+      labels: [],
+      debug: { reason: "no_protos" },
+    };
   }
 
-  // ─── Niveau 1 : cluster ─────────────────────────────────────────────────
-  const cosScores = clusterEmbs.map((ce) => Math.max(0, cosine(vEmb, ce))); // clamp ≥ 0
+  // ─── Niveau 1 : score chaque cluster ────────────────────────────────────
+  const cosScores = clusterEmbs.map((ce) => Math.max(0, cosine(vEmb, ce)));
   const bm25Scores = protos.map((_, ci) => bm25Score(vTokens, ci, bm25Cluster));
   const cosNorm = minmax(cosScores);
   const bmNorm = minmax(bm25Scores);
   const combined = cosScores.map((_, i) => weights.embed * cosNorm[i] + weights.bm25 * bmNorm[i]);
 
+  // Top index
   let topIdx = 0;
   for (let i = 1; i < combined.length; i++) if (combined[i] > combined[topIdx]) topIdx = i;
   const topScore = combined[topIdx];
 
+  // Breakdown détaillé pour les logs (toujours, même UNSURE)
+  const breakdown = protos
+    .map((p, i) => ({
+      cluster: p.label,
+      cluster_id: slug(p.label),
+      combined: round3(combined[i]),
+      embed_raw: round3(cosScores[i]),
+      embed_norm: round3(cosNorm[i]),
+      bm25_raw: round3(bm25Scores[i]),
+      bm25_norm: round3(bmNorm[i]),
+    }))
+    .sort((a, b) => b.combined - a.combined);
+
+  // ─── UNSURE si le meilleur score est sous le seuil absolu ────────────────
   if (topScore < threshold) {
     return {
-      cluster: { idx: -1, label: "UNSURE", id: "UNSURE" },
-      subcluster: null,
-      confidence_cluster: round3(topScore),
-      confidence_subcluster: 0,
-      scores: { embed: round3(cosScores[topIdx]), bm25: round3(bm25Scores[topIdx]) },
+      primary: {
+        cluster: { idx: -1, label: "UNSURE", id: "UNSURE" },
+        subcluster: null,
+        confidence_cluster: round3(topScore),
+        confidence_subcluster: 0,
+        scores: { embed: round3(cosScores[topIdx]), bm25: round3(bm25Scores[topIdx]) },
+      },
+      labels: [],
+      debug: { topScore: round3(topScore), threshold, breakdown: breakdown.slice(0, 5) },
     };
   }
 
-  const cluster = protos[topIdx];
+  // ─── Sélection multi-label : top + tous ceux ≥ ratio × top ──────────────
+  const minScore = Math.max(threshold, ratio * topScore);
+  const keptIdx = combined
+    .map((s, i) => ({ i, s }))
+    .filter((x) => x.s >= minScore)
+    .sort((a, b) => b.s - a.s)
+    .slice(0, maxLabels)
+    .map((x) => x.i);
 
-  // ─── Niveau 2 : sous-cluster ────────────────────────────────────────────
-  let subcluster = null;
-  let confidence_sub = 0;
-  if (cluster.subclusters.length) {
-    const subEmbs = subEmbsByCluster[topIdx] || [];
-    const bm25Sub = bm25SubByCluster[topIdx];
-    const subCos = subEmbs.map((se) => Math.max(0, cosine(vEmb, se)));
-    const subBm = cluster.subclusters.map((_, si) => bm25Score(vTokens, si, bm25Sub));
-    const subCosNorm = minmax(subCos);
-    const subBmNorm = minmax(subBm);
-    const subCombined = subCos.map((_, i) => weights.embed * subCosNorm[i] + weights.bm25 * subBmNorm[i]);
-    let sIdx = 0;
-    for (let i = 1; i < subCombined.length; i++) if (subCombined[i] > subCombined[sIdx]) sIdx = i;
-    subcluster = cluster.subclusters[sIdx];
-    confidence_sub = subCombined[sIdx];
-  }
+  // Pour chaque label retenu, calcul du meilleur sous-cluster
+  const labels = keptIdx.map((ci) => {
+    const cluster = protos[ci];
+    const clusterCombined = combined[ci];
+
+    let subcluster = null;
+    let subCombined = 0;
+    if (cluster.subclusters.length) {
+      const subEmbs = subEmbsByCluster[ci] || [];
+      const bm25Sub = bm25SubByCluster[ci];
+      const subCos = subEmbs.map((se) => Math.max(0, cosine(vEmb, se)));
+      const subBm = cluster.subclusters.map((_, si) => bm25Score(vTokens, si, bm25Sub));
+      const subCosNorm = minmax(subCos);
+      const subBmNorm = minmax(subBm);
+      const subComb = subCos.map((_, i) => weights.embed * subCosNorm[i] + weights.bm25 * subBmNorm[i]);
+      let sIdx = 0;
+      for (let i = 1; i < subComb.length; i++) if (subComb[i] > subComb[sIdx]) sIdx = i;
+      subcluster = cluster.subclusters[sIdx];
+      subCombined = subComb[sIdx];
+    }
+
+    return {
+      cluster: { idx: cluster.idx, label: cluster.label, id: slug(cluster.label) },
+      subcluster: subcluster
+        ? { idx: subcluster.idx, label: subcluster.label, id: slug(subcluster.label) }
+        : null,
+      confidence_cluster: round3(clusterCombined),
+      confidence_subcluster: round3(subCombined),
+      scores: { embed: round3(cosScores[ci]), bm25: round3(bm25Scores[ci]) },
+    };
+  });
 
   return {
-    cluster: { idx: cluster.idx, label: cluster.label, id: slug(cluster.label) },
-    subcluster: subcluster
-      ? { idx: subcluster.idx, label: subcluster.label, id: slug(subcluster.label) }
-      : null,
-    confidence_cluster: round3(topScore),
-    confidence_subcluster: round3(confidence_sub),
-    scores: { embed: round3(cosScores[topIdx]), bm25: round3(bm25Scores[topIdx]) },
+    primary: labels[0],
+    labels,
+    debug: { topScore: round3(topScore), minScore: round3(minScore), kept: labels.length, breakdown: breakdown.slice(0, 5) },
   };
 }
 
