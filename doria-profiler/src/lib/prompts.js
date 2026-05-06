@@ -164,6 +164,48 @@ Renvoie STRICTEMENT ce JSON (un objet items contenant un tableau, pas de prose) 
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ANCRES SÉMANTIQUES — un appel one-shot pour générer N phrases-exemples par
+// cluster et sous-cluster. Ces phrases servent d'ancres pour les embeddings :
+// l'embedding du cluster devient le centroide des embeddings de ses ancres,
+// ce qui dilue les mots ultra-fréquents du domaine et booste la discrimination.
+// Coût : ~$0.05 par taxonomie (one-shot, mis en cache dans la taxo).
+// ─────────────────────────────────────────────────────────────────────────────
+export function promptGenerateAnchors(taxo, contexte = "", nPerCluster = 5, nPerSub = 4) {
+  // Liste compacte de la taxo pour le prompt
+  const taxoList = (taxo?.categories || []).map((c) => ({
+    cluster: c.name,
+    sous_clusters: (c.subCategories || []),
+  }));
+
+  return `Tu es analyste sémantique senior${contexte ? ` (domaine : ${contexte})` : ""}.
+
+Pour chaque cluster et sous-cluster ci-dessous, génère des PHRASES-EXEMPLES typiques qui pourraient apparaître dans un verbatim client. Ces phrases serviront d'ancres pour un système de classification par similarité sémantique.
+
+CONTRAINTES STRICTES (respecte chacune) :
+1. Phrases COURTES et NATURELLES (8 à 25 mots), à la première personne ou impersonnelles, comme dans un avis client réel.
+2. Couvre DES ANGLES DIFFÉRENTS : positif, négatif, neutre, formel, familier, court, détaillé.
+3. ÉVITE absolument les mots ultra-fréquents du domaine qui apparaissent partout dans les verbatims (ex : "parc", "Asterix", "journée", "super"). Vise un vocabulaire DISCRIMINANT du sens du cluster.
+4. N'utilise PAS le nom littéral du cluster ou du sous-cluster dans la phrase.
+5. ${nPerCluster} phrases par cluster + ${nPerSub} phrases par sous-cluster.
+
+TAXONOMIE :
+${JSON.stringify(taxoList, null, 2)}
+
+Renvoie STRICTEMENT ce JSON (aucune prose, pas de markdown) :
+{
+  "anchors": [
+    {
+      "cluster": "<nom du cluster, identique à l'entrée>",
+      "examples": ["phrase 1", "phrase 2", "..."],
+      "subclusters": [
+        {"name": "<nom du sous-cluster>", "examples": ["...", "..."]}
+      ]
+    }
+  ]
+}`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // CHAT CONTEXTUEL — uniquement stats agrégées, jamais les verbatims bruts
 // (économie de tokens + confidentialité)
 // ─────────────────────────────────────────────────────────────────────────────

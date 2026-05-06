@@ -162,6 +162,7 @@ export default function App() {
             contexte={contexte}
             initialResults={enriched.length > 0 ? enriched : null}
             onResultsChange={setEnriched}
+            onTaxoUpdate={setTaxo}
             onValidate={({ items: enr }) => {
               setEnriched(enr);
               setPhase("results");

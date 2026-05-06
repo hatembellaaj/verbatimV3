@@ -5,8 +5,12 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
   tokenize, buildBM25Index, buildPrototypes, fetchEmbeddings, classifyVerbatim,
+  meanNormalize,
 } from "../lib/classifier.js";
-import { logInfo, logOk, logErr, logWarn, logApi, logDbg } from "../lib/logger.js";
+import { callClaude, MOCK_AI } from "../api/claude.js";
+import { promptGenerateAnchors } from "../lib/prompts.js";
+import { parseJSON } from "../lib/utils.js";
+import { logInfo, logOk, logErr, logWarn, logApi, logDbg, logLlm } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
 import {
   PANEL_2, BORDER, MUTED, TEXT, GOLD, TEAL, ACCENT, POS, NEG,
@@ -21,7 +25,7 @@ const MAX_LABELS = 3;          // nombre max de catégories par verbatim
 const SAMPLE_LOG_DETAILED = 5; // nb verbatims pour lesquels on log le breakdown complet
 
 export default function PhaseClassify({
-  items, taxo, contexte, initialResults, onResultsChange, onValidate, onBack,
+  items, taxo, contexte, initialResults, onResultsChange, onValidate, onBack, onTaxoUpdate,
 }) {
   const [running, setRunning] = useState(false);
   const [stage, setStage] = useState(null);
@@ -56,21 +60,96 @@ export default function PhaseClassify({
         throw new Error(`Service embeddings injoignable (${e.message}). Vérifie que le container 'embed' tourne.`);
       }
 
-      // ─── 2. Construction des prototypes ─────────────────────────────────
-      const protos = buildPrototypes(taxo);
+      // ─── 2. Génération des ancres LLM (one-shot, mis en cache) ─────────
+      let workingTaxo = taxo;
+      const hasAnchors = (workingTaxo?.categories || []).every(
+        (c) => Array.isArray(c.anchors) && c.anchors.length > 0
+      );
+      if (!hasAnchors) {
+        if (MOCK_AI) {
+          throw new Error("Génération d'ancres impossible en mode MOCK (clé API Anthropic requise)");
+        }
+        setStage("anchors");
+        logLlm("[anchors] Génération des ancres sémantiques par LLM (one-shot)…");
+        const tAnch = Date.now();
+        const raw = await callClaude(promptGenerateAnchors(workingTaxo, contexte, 5, 4), {
+          label: "anchors",
+          maxTokens: 4000,
+        });
+        const parsed = parseJSON(raw);
+        if (!parsed?.anchors?.length) throw new Error("Réponse LLM ancres invalide");
+
+        // Fusion des ancres dans la taxo (par nom de cluster)
+        const anchorByName = new Map(parsed.anchors.map((a) => [a.cluster, a]));
+        const updatedCategories = workingTaxo.categories.map((c) => {
+          const match = anchorByName.get(c.name);
+          if (!match) {
+            logWarn(`[anchors] Pas d'ancres reçues pour cluster "${c.name}"`);
+            return c;
+          }
+          const subAnchors = {};
+          for (const sub of (match.subclusters || [])) {
+            if (Array.isArray(sub.examples)) subAnchors[sub.name] = sub.examples;
+          }
+          return {
+            ...c,
+            anchors: Array.isArray(match.examples) ? match.examples : [],
+            subAnchors,
+          };
+        });
+        workingTaxo = {
+          ...workingTaxo,
+          categories: updatedCategories,
+          anchorsVersion: new Date().toISOString(),
+        };
+        if (onTaxoUpdate) onTaxoUpdate(workingTaxo);
+        const totalAnchors = updatedCategories.reduce(
+          (s, c) => s + (c.anchors?.length || 0) + Object.values(c.subAnchors || {}).reduce((ss, arr) => ss + arr.length, 0), 0,
+        );
+        logOk(`[anchors] ${totalAnchors} ancres générées en ${Date.now() - tAnch}ms (${updatedCategories.length} clusters)`);
+        // Aperçu : 2 premières ancres de chaque cluster
+        updatedCategories.forEach((c) => {
+          const sample = (c.anchors || []).slice(0, 2).map((a) => `"${a}"`).join(" · ");
+          logDbg(`[anchors] cluster "${c.name}" → ${sample || "(aucune)"}`);
+        });
+      } else {
+        logInfo(`[anchors] Ancres déjà présentes dans la taxo (version ${workingTaxo.anchorsVersion || "?"}), réutilisation`);
+      }
+
+      // ─── 3. Construction des prototypes (avec ancres) ───────────────────
+      const protos = buildPrototypes(workingTaxo);
       if (!protos.length) throw new Error("Taxonomie vide");
-      const protoTexts = protos.map((p) => p.proto);
-      const subTextsByCluster = protos.map((p) => p.subclusters.map((s) => s.proto));
-      const totalSubs = subTextsByCluster.flat().length;
-      logInfo(`[protos] ${protos.length} clusters, ${totalSubs} sous-clusters construits`);
-      protos.forEach((p, i) => {
-        logDbg(`[protos] #${i} cluster="${p.label}" → "${p.proto}" (${p.subclusters.length} sous-clusters)`);
+
+      // Pour chaque cluster on a un tableau de textes (nom + ancres)
+      // → on les flatten pour tout embedder en un seul appel, puis on calcule les centroides
+      const flatClusterTexts = [];
+      const clusterRanges = []; // [{start, end}] pour reconstituer les groupes
+      protos.forEach((p) => {
+        clusterRanges.push({ start: flatClusterTexts.length, end: flatClusterTexts.length + p.protoTexts.length });
+        flatClusterTexts.push(...p.protoTexts);
       });
 
-      // ─── 3. Embeddings prototypes ───────────────────────────────────────
+      const flatSubTexts = [];
+      const subRanges = []; // [[{start,end}, ...], ...] par cluster puis sous-cluster
+      protos.forEach((p) => {
+        const ranges = [];
+        for (const sub of p.subclusters) {
+          ranges.push({ start: flatSubTexts.length, end: flatSubTexts.length + sub.protoTexts.length });
+          flatSubTexts.push(...sub.protoTexts);
+        }
+        subRanges.push(ranges);
+      });
+
+      const totalSubs = protos.reduce((s, p) => s + p.subclusters.length, 0);
+      logInfo(`[protos] ${protos.length} clusters · ${totalSubs} sous-clusters · ${flatClusterTexts.length + flatSubTexts.length} textes-ancres au total`);
+      protos.forEach((p, i) => {
+        logDbg(`[protos] cluster "${p.label}" → ${p.protoTexts.length} ancres (${p.protoTexts[0]} + ${p.protoTexts.length - 1} exemples)`);
+      });
+
+      // ─── 4. Embeddings prototypes (centroide) ───────────────────────────
       setStage("embed-protos");
-      const allProtoTexts = [...protoTexts, ...subTextsByCluster.flat()];
-      logApi(`[embed] POST /api/embed/embed pour ${allProtoTexts.length} prototypes (cluster + sous-cluster)`);
+      const allProtoTexts = [...flatClusterTexts, ...flatSubTexts];
+      logApi(`[embed] POST /api/embed/embed pour ${allProtoTexts.length} textes-prototypes`);
       setProgress({ done: 0, total: allProtoTexts.length });
       const tProto = Date.now();
       const allProtoEmbs = await fetchEmbeddings(allProtoTexts, {
@@ -79,25 +158,28 @@ export default function PhaseClassify({
           logDbg(`[embed] proto batch ${done}/${total}`);
         },
       });
-      logOk(`[embed] ${allProtoEmbs.length} prototypes encodés en ${Date.now() - tProto}ms (dim=${allProtoEmbs[0]?.length || 0})`);
+      logOk(`[embed] ${allProtoEmbs.length} embeddings calculés en ${Date.now() - tProto}ms (dim=${allProtoEmbs[0]?.length || 0})`);
 
-      const clusterEmbs = allProtoEmbs.slice(0, protoTexts.length);
-      const subEmbsByCluster = [];
-      let cursor = protoTexts.length;
-      for (const subs of subTextsByCluster) {
-        subEmbsByCluster.push(allProtoEmbs.slice(cursor, cursor + subs.length));
-        cursor += subs.length;
-      }
+      // Centroide par cluster
+      const flatClusterEmbs = allProtoEmbs.slice(0, flatClusterTexts.length);
+      const flatSubEmbs = allProtoEmbs.slice(flatClusterTexts.length);
+      const clusterEmbs = clusterRanges.map(({ start, end }) =>
+        meanNormalize(flatClusterEmbs.slice(start, end))
+      );
+      const subEmbsByCluster = subRanges.map((ranges) =>
+        ranges.map(({ start, end }) => meanNormalize(flatSubEmbs.slice(start, end)))
+      );
+      logInfo(`[protos] Centroides calculés : ${clusterEmbs.length} clusters + ${subEmbsByCluster.flat().length} sous-clusters`);
 
-      // ─── 4. BM25 index ──────────────────────────────────────────────────
-      const protoTokens = protoTexts.map(tokenize);
-      const bm25Cluster = buildBM25Index(protoTokens);
-      const bm25SubByCluster = subTextsByCluster.map((subs) => buildBM25Index(subs.map(tokenize)));
+      // ─── 5. BM25 index (sur le doc joint nom+ancres → vocab plus riche) ─
+      const bm25ClusterDocs = protos.map((p) => p.bm25Doc);
+      const bm25Cluster = buildBM25Index(bm25ClusterDocs.map(tokenize));
+      const bm25SubByCluster = protos.map((p) => buildBM25Index(p.subBm25Docs.map(tokenize)));
       const vocabSize = bm25Cluster.idf.size;
       logInfo(`[bm25] Index cluster construit : N=${bm25Cluster.N} docs, vocab=${vocabSize} termes, avgDl=${bm25Cluster.avgDl.toFixed(1)}`);
       protos.forEach((p, i) => {
-        const tokens = protoTokens[i];
-        logDbg(`[bm25] cluster #${i} "${p.label}" tokens=[${tokens.slice(0, 8).join(", ")}${tokens.length > 8 ? "…" : ""}] (${tokens.length} tokens)`);
+        const tokens = tokenize(p.bm25Doc);
+        logDbg(`[bm25] cluster #${i} "${p.label}" → ${tokens.length} tokens, top: [${tokens.slice(0, 10).join(", ")}${tokens.length > 10 ? "…" : ""}]`);
       });
 
       // ─── 5. Embeddings verbatims (par lots) ─────────────────────────────
@@ -266,7 +348,8 @@ export default function PhaseClassify({
   }
 
   const stageLabels = {
-    "embed-protos": "Encodage des prototypes",
+    "anchors": "Génération des ancres LLM (one-shot)",
+    "embed-protos": "Encodage des prototypes (centroide)",
     "embed-verbatims": "Encodage des verbatims",
     "classify": "Classification multi-label",
     "done": "Terminé",
@@ -293,6 +376,34 @@ export default function PhaseClassify({
           <span><b style={{ color: TEXT }}>{(taxo?.categories || []).length}</b> clusters</span>
           <span>·</span>
           <span><b style={{ color: TEXT }}>{(taxo?.categories || []).reduce((s, c) => s + (c.subCategories?.length || 0), 0)}</b> sous-clusters</span>
+          <span>·</span>
+          {(taxo?.categories || []).every((c) => Array.isArray(c.anchors) && c.anchors.length > 0) ? (
+            <span style={{ color: POS }}>
+              ✓ Ancres LLM en cache <span style={{ color: MUTED, fontSize: 11 }}>({taxo.anchorsVersion?.slice(0, 10) || "version ?"})</span>
+              {!running && (
+                <button
+                  onClick={() => {
+                    if (!confirm("Régénérer les ancres ? Cela consommera ~$0.05 d'API Anthropic et écrasera les ancres actuelles.")) return;
+                    if (onTaxoUpdate) {
+                      const cleared = {
+                        ...taxo,
+                        categories: taxo.categories.map((c) => ({ ...c, anchors: undefined, subAnchors: undefined })),
+                        anchorsVersion: null,
+                      };
+                      onTaxoUpdate(cleared);
+                    }
+                  }}
+                  style={{ ...buttonSecondary, padding: "2px 8px", fontSize: 10, marginLeft: 8 }}
+                >
+                  Régénérer
+                </button>
+              )}
+            </span>
+          ) : (
+            <span style={{ color: ACCENT }}>
+              ⚠ Ancres LLM non générées — un appel sera fait au lancement (~$0.05)
+            </span>
+          )}
         </div>
 
         {!running && !results && (

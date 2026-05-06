@@ -98,28 +98,56 @@ function minmax(arr) {
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Construction des prototypes (mode BASIQUE) :
-//   cluster proto = "<nom_cluster> : <sous_cluster_1>, <sous_cluster_2>, ..."
-//   subcluster proto = "<nom_cluster> > <nom_sous_cluster>"
+// Construction des prototypes — version multi-textes pour centroide d'embeddings.
+// Chaque cluster (et sous-cluster) est décrit par PLUSIEURS textes :
+//   - le nom littéral
+//   - les ancres LLM si disponibles (taxo.categories[i].anchors / subAnchors)
+// L'embedding final du prototype est le centroide (moyenne L2-normalisée) des
+// embeddings de tous ces textes, ce qui dilue les mots fréquents du domaine.
+//
+// Sortie pour chaque cluster :
+//   { idx, label, protoTexts: [t1, t2, ...], subclusters: [{idx, label, protoTexts: [...]}] }
+// Le 1er texte est toujours le nom (utilisé seul pour BM25).
 // ───────────────────────────────────────────────────────────────────────────
 export function buildPrototypes(taxo) {
   const clusters = (taxo?.categories || []).map((c, ci) => {
-    const subs = (c.subCategories || []).map((s, si) => ({
-      idx: si,
-      label: s,
-      proto: `${c.name} > ${s}`,
-    }));
+    const clusterAnchors = Array.isArray(c.anchors) ? c.anchors : [];
+    const subs = (c.subCategories || []).map((s, si) => {
+      const subAnchorList = c.subAnchors?.[s];
+      const protoTexts = [`${c.name} > ${s}`]; // forme contextualisée
+      if (Array.isArray(subAnchorList)) protoTexts.push(...subAnchorList);
+      return { idx: si, label: s, protoTexts };
+    });
+    const protoTexts = [c.name];
+    if (clusterAnchors.length) protoTexts.push(...clusterAnchors);
     return {
       idx: ci,
       label: c.name,
-      // Prototype niveau 1 = nom + énumération des sous-clusters (pour diversifier le contexte)
-      proto: subs.length
-        ? `${c.name} : ${subs.map((s) => s.label).join(", ")}`
-        : c.name,
+      protoTexts,
       subclusters: subs,
+      // Texte joint utilisé pour BM25 (vocabulaire enrichi par les ancres)
+      bm25Doc: [c.name, ...clusterAnchors].join(" "),
+      subBm25Docs: subs.map((s) => s.protoTexts.join(" ")),
     };
   });
   return clusters;
+}
+
+// Moyenne L2-normalisée d'un set de vecteurs (centroide pour cosine).
+export function meanNormalize(vectors) {
+  if (!vectors.length) return [];
+  const dim = vectors[0].length;
+  const sum = new Array(dim).fill(0);
+  for (const v of vectors) for (let i = 0; i < dim; i++) sum[i] += v[i];
+  // Moyenne
+  for (let i = 0; i < dim; i++) sum[i] /= vectors.length;
+  // Normalisation L2 pour que cosine = produit scalaire
+  let norm = 0;
+  for (let i = 0; i < dim; i++) norm += sum[i] * sum[i];
+  norm = Math.sqrt(norm);
+  if (norm < 1e-12) return sum;
+  for (let i = 0; i < dim; i++) sum[i] /= norm;
+  return sum;
 }
 
 // ───────────────────────────────────────────────────────────────────────────
