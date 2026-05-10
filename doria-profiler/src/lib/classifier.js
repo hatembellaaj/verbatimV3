@@ -12,6 +12,46 @@
 //   5. Si score combiné < seuil → UNSURE.
 
 // ───────────────────────────────────────────────────────────────────────────
+// Découpage du verbatim en phrases / chunks pour la classification multi-topic.
+// Stratégie :
+//   1. split sur les ponctuations fortes (.!?;…\n)
+//   2. si un chunk fait > maxWordsPerChunk mots, on le re-split sur les virgules
+//   3. on filtre les chunks < minWords mots (bruit)
+// Si aucun chunk valide n'émerge, on retourne le verbatim entier en fallback.
+// ───────────────────────────────────────────────────────────────────────────
+export function splitSentences(text, { minWords = 3, maxWordsPerChunk = 18 } = {}) {
+  if (!text) return [];
+  const raw = String(text).trim();
+  if (!raw) return [];
+
+  // Étape 1 : split sur ponctuations fortes
+  const strongChunks = raw
+    .split(/(?<=[.!?;…])\s+|\n+/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  // Étape 2 : si un chunk est trop long, on coupe aussi sur les virgules
+  const finalChunks = [];
+  for (const chunk of strongChunks) {
+    const words = chunk.split(/\s+/).filter(Boolean);
+    if (words.length <= maxWordsPerChunk) {
+      finalChunks.push(chunk);
+    } else {
+      const subs = chunk.split(/,\s+/).map((s) => s.trim()).filter(Boolean);
+      finalChunks.push(...subs);
+    }
+  }
+
+  // Étape 3 : filtre des chunks trop courts (bruit)
+  const filtered = finalChunks.filter(
+    (s) => s.split(/\s+/).filter(Boolean).length >= minWords
+  );
+
+  // Fallback : si tout a été filtré, on rend le verbatim entier
+  return filtered.length ? filtered : [raw];
+}
+
+// ───────────────────────────────────────────────────────────────────────────
 // Tokenisation FR : minuscule, suppression accents, split mots, stopwords FR.
 // ───────────────────────────────────────────────────────────────────────────
 const STOPWORDS_FR = new Set([

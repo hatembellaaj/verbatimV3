@@ -5,7 +5,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
   tokenize, buildBM25Index, buildPrototypes, fetchEmbeddings, classifyVerbatim,
-  meanNormalize,
+  meanNormalize, splitSentences,
 } from "../lib/classifier.js";
 import { logInfo, logOk, logErr, logWarn, logApi, logDbg } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
@@ -138,33 +138,89 @@ export default function PhaseClassify({
         logDbg(`[bm25] cluster #${i} "${p.label}" → ${tokens.length} tokens, top: [${tokens.slice(0, 10).join(", ")}${tokens.length > 10 ? "…" : ""}]`);
       });
 
-      // ─── 5. Embeddings verbatims (par lots) ─────────────────────────────
+      // ─── 5. Découpage en phrases + embeddings (sentence-level) ─────────
+      // On classifie chaque PHRASE séparément puis on agrège les labels
+      // au niveau du verbatim (union, dedup, max confidence par paire).
       if (cancelRef.current) return;
       setStage("embed-verbatims");
-      setProgress({ done: 0, total: items.length });
       const verbatims = items.map((it) => String(it.verbatim || "").slice(0, 2000));
       const emptyCount = verbatims.filter((v) => !v.trim()).length;
       if (emptyCount > 0) logWarn(`[embed] ${emptyCount} verbatims vides détectés (seront classés UNSURE)`);
-      logApi(`[embed] POST /api/embed/embed pour ${verbatims.length} verbatims`);
+
+      // Split chaque verbatim en phrases / chunks, garde un mapping sentenceIdx → verbatimIdx
+      const allSentences = [];
+      const sentToVerb = []; // sentToVerb[si] = vIdx
+      const sentencesByVerb = []; // sentencesByVerb[vi] = [sentIdx, sentIdx, ...]
+      for (let vi = 0; vi < verbatims.length; vi++) {
+        const sents = splitSentences(verbatims[vi]);
+        const indices = [];
+        for (const s of sents) {
+          indices.push(allSentences.length);
+          allSentences.push(s);
+          sentToVerb.push(vi);
+        }
+        sentencesByVerb.push(indices);
+      }
+      const avgSent = (allSentences.length / Math.max(verbatims.length, 1)).toFixed(2);
+      logInfo(`[split] ${verbatims.length} verbatims → ${allSentences.length} phrases (moy ${avgSent}/verbatim)`);
+
+      setProgress({ done: 0, total: allSentences.length });
+      logApi(`[embed] POST /api/embed/embed pour ${allSentences.length} phrases`);
       const tVerb = Date.now();
-      const verbEmbs = await fetchEmbeddings(verbatims, {
+      const sentEmbs = await fetchEmbeddings(allSentences, {
         onProgress: ({ done, total }) => {
           setProgress({ done, total });
-          if (done % 128 === 0 || done === total) {
+          if (done % 256 === 0 || done === total) {
             const rate = done / Math.max((Date.now() - tVerb) / 1000, 0.001);
-            logDbg(`[embed] verbatim batch ${done}/${total} (${rate.toFixed(0)}/s)`);
+            logDbg(`[embed] phrase batch ${done}/${total} (${rate.toFixed(0)}/s)`);
           }
         },
       });
-      const verbatimMs = Date.now() - tVerb;
-      logOk(`[embed] ${verbEmbs.length} verbatims encodés en ${verbatimMs}ms (${(verbEmbs.length / (verbatimMs / 1000)).toFixed(0)}/s)`);
+      const sentMs = Date.now() - tVerb;
+      logOk(`[embed] ${sentEmbs.length} phrases encodées en ${sentMs}ms (${(sentEmbs.length / (sentMs / 1000)).toFixed(0)}/s)`);
 
-      // ─── 6. Classification ───────────────────────────────────────────────
+      // ─── 6. Classification phrase-par-phrase + agrégation par verbatim ──
       if (cancelRef.current) return;
       setStage("classify");
-      setProgress({ done: 0, total: items.length });
-      logInfo(`[classify] Démarrage classification multi-label (sans plafond, ratio ${MULTI_RATIO})`);
+      setProgress({ done: 0, total: allSentences.length });
+      logInfo(`[classify] Démarrage classification SENTENCE-LEVEL multi-label (ratio ${MULTI_RATIO}) sur ${allSentences.length} phrases`);
 
+      // Classifie chaque phrase, accumule par verbatim un Map<key, labelMaxConf>
+      const verbatimLabels = items.map(() => new Map());
+      const verbatimDebug = items.map(() => []); // pour les logs détaillés sur les premiers verbatims
+
+      for (let si = 0; si < allSentences.length; si++) {
+        if (cancelRef.current) break;
+        if ((si + 1) % 100 === 0 || si === allSentences.length - 1) {
+          setProgress({ done: si + 1, total: allSentences.length });
+        }
+        const vIdx = sentToVerb[si];
+        const sent = allSentences[si];
+        const result = classifyVerbatim({
+          vEmb: sentEmbs[si],
+          vTokens: tokenize(sent),
+          protos,
+          clusterEmbs, subEmbsByCluster,
+          bm25Cluster, bm25SubByCluster,
+          weights: { embed: EMBED_WEIGHT, bm25: BM25_WEIGHT },
+          threshold: CONFIDENCE_THRESHOLD,
+          ratio: MULTI_RATIO,
+        });
+        // Aggrégation par (cluster_id, subcluster_id) — max confidence
+        for (const lbl of result.labels) {
+          const key = `${lbl.cluster.id}::${lbl.subcluster?.id || ""}`;
+          const existing = verbatimLabels[vIdx].get(key);
+          if (!existing || lbl.confidence_cluster > existing.confidence_cluster) {
+            verbatimLabels[vIdx].set(key, lbl);
+          }
+        }
+        // Capture pour les logs verbeux des 5 premiers verbatims
+        if (vIdx < SAMPLE_LOG_DETAILED) {
+          verbatimDebug[vIdx].push({ sent, result });
+        }
+      }
+
+      // Construction des items enrichis
       const enriched = [];
       let unsureCount = 0;
       let multiLabelCount = 0;
@@ -174,54 +230,49 @@ export default function PhaseClassify({
       for (let i = 0; i < items.length; i++) {
         if (cancelRef.current) break;
         const v = items[i];
-        const vEmb = verbEmbs[i];
-        const vTokens = tokenize(verbatims[i]);
+        const labelMap = verbatimLabels[i];
+        const sortedLabels = [...labelMap.values()]
+          .sort((a, b) => b.confidence_cluster - a.confidence_cluster);
 
-        const result = classifyVerbatim({
-          vEmb, vTokens, protos,
-          clusterEmbs, subEmbsByCluster,
-          bm25Cluster, bm25SubByCluster,
-          weights: { embed: EMBED_WEIGHT, bm25: BM25_WEIGHT },
-          threshold: CONFIDENCE_THRESHOLD,
-          ratio: MULTI_RATIO,
-          // pas de maxLabels → un verbatim peut être associé à autant de
-          // catégories et sous-catégories que pertinent (filtre uniquement par ratio)
-        });
-
-        const isUnsure = !result.primary || result.primary.cluster?.id === "UNSURE";
+        const isUnsure = sortedLabels.length === 0;
         if (isUnsure) unsureCount++;
-        if (result.labels.length > 1) multiLabelCount++;
-        totalLabels += Math.max(result.labels.length, 1);
-        for (const l of result.labels) {
-          labelDistribution.set(l.cluster.label, (labelDistribution.get(l.cluster.label) || 0) + 1);
-        }
+        if (sortedLabels.length > 1) multiLabelCount++;
+        totalLabels += Math.max(sortedLabels.length, 1);
 
-        // Log détaillé sur les premiers verbatims (échantillon)
-        if (i < SAMPLE_LOG_DETAILED) {
-          const verbatimPreview = verbatims[i].slice(0, 80).replace(/\s+/g, " ");
-          if (isUnsure) {
-            logWarn(`[classify] #${i} UNSURE (top=${result.debug.topScore} < ${CONFIDENCE_THRESHOLD}) "${verbatimPreview}…"`);
-            const top3 = (result.debug.breakdown || []).slice(0, 3)
-              .map((b) => `${b.cluster}=${b.combined}`).join(" · ");
-            logDbg(`[classify] #${i} top-3 scores : ${top3}`);
-          } else {
-            const labelsStr = result.labels
-              .map((l) => `${l.cluster.label}${l.subcluster ? ">" + l.subcluster.label : ""} (${l.confidence_cluster})`)
-              .join(" + ");
-            logOk(`[classify] #${i} → ${labelsStr} | "${verbatimPreview}…"`);
-            const top3 = (result.debug.breakdown || []).slice(0, 3)
-              .map((b) => `${b.cluster}=${b.combined} (e=${b.embed_norm}, b=${b.bm25_norm})`).join(" · ");
-            logDbg(`[classify] #${i} breakdown : ${top3}`);
+        // Distribution UNIQUE par cluster (un verbatim avec 2 sub d'un même cluster compte 1×)
+        const seenClustersInVerb = new Set();
+        for (const l of sortedLabels) {
+          if (!seenClustersInVerb.has(l.cluster.label)) {
+            labelDistribution.set(l.cluster.label, (labelDistribution.get(l.cluster.label) || 0) + 1);
+            seenClustersInVerb.add(l.cluster.label);
           }
         }
 
-        // Forme compatible avec PhaseResults (top-1 dans `category`/`subCategory`)
-        // et nouveau champ `categories[]` pour le multi-label.
-        const primary = result.primary;
+        // Logs détaillés pour les premiers verbatims
+        if (i < SAMPLE_LOG_DETAILED) {
+          const verbatimPreview = verbatims[i].slice(0, 80).replace(/\s+/g, " ");
+          const dbg = verbatimDebug[i] || [];
+          logInfo(`[classify] #${i} (${dbg.length} phrases) "${verbatimPreview}…"`);
+          dbg.forEach((d, j) => {
+            const prev = (d.sent || "").slice(0, 60).replace(/\s+/g, " ");
+            const labels = d.result.labels.map((l) => `${l.cluster.label}${l.subcluster ? ">" + l.subcluster.label : ""}`).join(" + ") || "UNSURE";
+            logDbg(`[classify] #${i}.s${j} "${prev}" → ${labels}`);
+          });
+          if (isUnsure) {
+            logWarn(`[classify] #${i} → aucun label retenu (UNSURE)`);
+          } else {
+            const labelsStr = sortedLabels
+              .map((l) => `${l.cluster.label}${l.subcluster ? ">" + l.subcluster.label : ""} (${l.confidence_cluster})`)
+              .join(" + ");
+            logOk(`[classify] #${i} → AGRÉGÉ : ${labelsStr}`);
+          }
+        }
+
+        // Forme de l'item enrichi
+        const primary = sortedLabels[0] || null;
         enriched.push({
           ...v,
           idx: i,
-          // Compat top-1
           category: primary?.cluster?.label || "UNSURE",
           subCategory: primary?.subcluster?.label || null,
           cluster_id: primary?.cluster?.id || "UNSURE",
@@ -229,8 +280,7 @@ export default function PhaseClassify({
           confidence: primary?.confidence_cluster || 0,
           confidence_cluster: primary?.confidence_cluster || 0,
           confidence_subcluster: primary?.confidence_subcluster || 0,
-          // Multi-label : tableau de tous les labels retenus (vide si UNSURE)
-          categories: result.labels.map((l) => ({
+          categories: sortedLabels.map((l) => ({
             cluster_id: l.cluster.id,
             cluster_label: l.cluster.label,
             subcluster_id: l.subcluster?.id || null,
@@ -239,23 +289,19 @@ export default function PhaseClassify({
             confidence_subcluster: l.confidence_subcluster,
             scores: l.scores,
           })),
-          // Champs LLM non calculés en mode embeddings
           tonality: null,
           psychoProfile: null,
           pad: null,
           biais: [],
           motivations: [],
           signaux: [],
-          // Métadonnées de traçabilité
-          _classifier: "embed+bm25",
+          _classifier: "embed+bm25-sentence",
           _scores: primary?.scores || null,
+          _sentenceCount: sentencesByVerb[i]?.length || 0,
         });
 
-        if ((i + 1) % 25 === 0 || i === items.length - 1) {
-          setProgress({ done: i + 1, total: items.length });
-          if ((i + 1) % 100 === 0) {
-            logInfo(`[classify] ${i + 1}/${items.length} traités (UNSURE: ${unsureCount}, multi-label: ${multiLabelCount})`);
-          }
+        if ((i + 1) % 100 === 0 || i === items.length - 1) {
+          logInfo(`[classify] ${i + 1}/${items.length} verbatims agrégés (UNSURE: ${unsureCount}, multi-label: ${multiLabelCount})`);
           await new Promise((r) => setTimeout(r, 0)); // yield UI
         }
       }
@@ -306,8 +352,8 @@ export default function PhaseClassify({
 
   const stageLabels = {
     "embed-protos": "Encodage des prototypes (centroide)",
-    "embed-verbatims": "Encodage des verbatims",
-    "classify": "Classification multi-label",
+    "embed-verbatims": "Encodage des phrases (sentence-level)",
+    "classify": "Classification multi-label par phrase + agrégation",
     "done": "Terminé",
   };
   const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
@@ -319,12 +365,15 @@ export default function PhaseClassify({
           Classification hybride <span style={{ color: MUTED, fontWeight: 400, fontSize: 12 }}>(embeddings Solon + BM25, multi-label)</span>
         </h2>
         <p style={{ margin: "0 0 12px 0", color: MUTED, fontSize: 13 }}>
-          Classification 100% locale, sans LLM dans la boucle. Score combiné :
+          Classification 100% locale, sans LLM dans la boucle. <b>Sentence-level</b> :
+          chaque verbatim est découpé en phrases, classé phrase par phrase,
+          puis les labels sont fusionnés au niveau du verbatim (union, max confidence).
+          Score combiné :
           <span style={{ color: TEAL }}> {Math.round(EMBED_WEIGHT * 100)}% embeddings</span> +
           <span style={{ color: TEAL }}> {Math.round(BM25_WEIGHT * 100)}% BM25</span>.
-          Un verbatim peut recevoir <b>plusieurs catégories et sous-catégories</b> à la fois
-          (toutes celles dont le score est ≥ {Math.round(MULTI_RATIO * 100)}% du top, sans plafond).
-          Sous le seuil {CONFIDENCE_THRESHOLD} → bucket <code>UNSURE</code>.
+          Pas de plafond sur le nombre de catégories par verbatim — toute phrase qui
+          dépasse {CONFIDENCE_THRESHOLD} et dont le score est ≥ {Math.round(MULTI_RATIO * 100)}% du top de sa phrase
+          contribue ses labels au verbatim.
         </p>
 
         <div style={{ display: "flex", gap: 12, alignItems: "center", fontSize: 12, color: MUTED, marginBottom: 12, flexWrap: "wrap" }}>
