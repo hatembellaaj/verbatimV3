@@ -6,6 +6,7 @@ import PhaseImport from "./components/PhaseImport.jsx";
 import PhaseDiscover from "./components/PhaseDiscover.jsx";
 import PhaseCalibrate from "./components/PhaseCalibrate.jsx";
 import PhaseAnalyse from "./components/PhaseAnalyse.jsx";
+import PhaseAnchors from "./components/PhaseAnchors.jsx";
 import PhaseClassify from "./components/PhaseClassify.jsx";
 import PhaseResults from "./components/PhaseResults.jsx";
 import { save, load, clearAll } from "./lib/storage.js";
@@ -17,16 +18,17 @@ import {
 
 // Deux flux possibles après "discover" :
 //   LLM      : discover → calibrate → analyse → results
-//   Embed    : discover → classify → results
+//   Embed    : discover → anchors → classify → results
 // Le stepper affiche dynamiquement les bonnes étapes selon `mode`.
 const PHASES_LLM = ["import", "discover", "calibrate", "analyse", "results"];
-const PHASES_EMBED = ["import", "discover", "classify", "results"];
+const PHASES_EMBED = ["import", "discover", "anchors", "classify", "results"];
 const PHASE_LABELS = {
   import: "1. Import",
   discover: "2. Découverte",
   calibrate: "3. Calibration",
   analyse: "4. Analyse LLM",
-  classify: "3. Classification",
+  anchors: "3. Ancres",
+  classify: "4. Classification",
   results: "Résultats",
 };
 
@@ -92,7 +94,8 @@ export default function App() {
           discover: items.length > 0,
           calibrate: items.length > 0 && !!taxo,
           analyse: !!taxo && !!psycho,
-          classify: items.length > 0 && !!taxo,
+          anchors: items.length > 0 && !!taxo,
+          classify: items.length > 0 && !!taxo && (taxo.categories || []).some((c) => c.anchors?.length),
           results: enriched.length > 0,
         }} />
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -123,9 +126,21 @@ export default function App() {
             onValidate={({ taxo, mode: chosenMode }) => {
               setTaxo(taxo);
               setMode(chosenMode || "llm");
-              setPhase(chosenMode === "embed" ? "classify" : "calibrate");
+              setPhase(chosenMode === "embed" ? "anchors" : "calibrate");
             }}
             onBack={() => setPhase("import")}
+          />
+        )}
+        {phase === "anchors" && (
+          <PhaseAnchors
+            taxo={taxo}
+            contexte={contexte}
+            onTaxoUpdate={setTaxo}
+            onValidate={({ taxo: validatedTaxo }) => {
+              setTaxo(validatedTaxo);
+              setPhase("classify");
+            }}
+            onBack={() => setPhase("discover")}
           />
         )}
         {phase === "calibrate" && (
@@ -162,12 +177,11 @@ export default function App() {
             contexte={contexte}
             initialResults={enriched.length > 0 ? enriched : null}
             onResultsChange={setEnriched}
-            onTaxoUpdate={setTaxo}
             onValidate={({ items: enr }) => {
               setEnriched(enr);
               setPhase("results");
             }}
-            onBack={() => setPhase("discover")}
+            onBack={() => setPhase("anchors")}
           />
         )}
         {phase === "results" && (

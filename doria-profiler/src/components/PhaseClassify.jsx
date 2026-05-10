@@ -7,10 +7,7 @@ import {
   tokenize, buildBM25Index, buildPrototypes, fetchEmbeddings, classifyVerbatim,
   meanNormalize,
 } from "../lib/classifier.js";
-import { callClaude, MOCK_AI } from "../api/claude.js";
-import { promptGenerateAnchorsForCluster } from "../lib/prompts.js";
-import { parseJSON, pLimit } from "../lib/utils.js";
-import { logInfo, logOk, logErr, logWarn, logApi, logDbg, logLlm } from "../lib/logger.js";
+import { logInfo, logOk, logErr, logWarn, logApi, logDbg } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
 import {
   PANEL_2, BORDER, MUTED, TEXT, GOLD, TEAL, ACCENT, POS, NEG,
@@ -25,7 +22,7 @@ const MAX_LABELS = 3;          // nombre max de catégories par verbatim
 const SAMPLE_LOG_DETAILED = 5; // nb verbatims pour lesquels on log le breakdown complet
 
 export default function PhaseClassify({
-  items, taxo, contexte, initialResults, onResultsChange, onValidate, onBack, onTaxoUpdate,
+  items, taxo, contexte, initialResults, onResultsChange, onValidate, onBack,
 }) {
   const [running, setRunning] = useState(false);
   const [stage, setStage] = useState(null);
@@ -60,76 +57,18 @@ export default function PhaseClassify({
         throw new Error(`Service embeddings injoignable (${e.message}). Vérifie que le container 'embed' tourne.`);
       }
 
-      // ─── 2. Génération des ancres LLM — UN APPEL PAR CLUSTER (parallélisé) ─
-      let workingTaxo = taxo;
-      const hasAnchors = (workingTaxo?.categories || []).every(
+      // ─── 2. Vérification des ancres (générées dans la phase Anchors précédente) ─
+      const workingTaxo = taxo;
+      const hasAnchors = (workingTaxo?.categories || []).some(
         (c) => Array.isArray(c.anchors) && c.anchors.length > 0
       );
       if (!hasAnchors) {
-        if (MOCK_AI) {
-          throw new Error("Génération d'ancres impossible en mode MOCK (clé API Anthropic requise)");
-        }
-        setStage("anchors");
-        const N = workingTaxo.categories.length;
-        logLlm(`[anchors] Génération par LLM — un appel par cluster (${N} clusters, concurrency=2)…`);
-        const tAnch = Date.now();
-        setProgress({ done: 0, total: N });
-
-        const limit = pLimit(2);
-        let done = 0;
-        const failures = [];
-
-        const tasks = workingTaxo.categories.map((c, idx) => limit(async () => {
-          const tStart = Date.now();
-          try {
-            const raw = await callClaude(
-              promptGenerateAnchorsForCluster(c, contexte, 5, 4),
-              { label: `anchors[${idx}]`, maxTokens: 1500 },
-            );
-            const parsed = parseJSON(raw);
-            if (!parsed) throw new Error(`JSON invalide (réponse: ${raw?.slice(0, 200) || "vide"})`);
-            const examples = Array.isArray(parsed.examples) ? parsed.examples : [];
-            const subAnchors = {};
-            for (const sub of (parsed.subclusters || [])) {
-              if (Array.isArray(sub.examples)) subAnchors[sub.name] = sub.examples;
-            }
-            done++;
-            setProgress({ done, total: N });
-            const subCount = Object.values(subAnchors).reduce((s, a) => s + a.length, 0);
-            logOk(`[anchors] cluster "${c.name}" : ${examples.length} ancres + ${subCount} sous-ancres en ${Date.now() - tStart}ms`);
-            // Échantillon de 2 ancres dans les logs
-            const preview = examples.slice(0, 2).map((a) => `"${a.slice(0, 60)}"`).join(" · ");
-            logDbg(`[anchors] "${c.name}" → ${preview || "(vide)"}`);
-            return { ...c, anchors: examples, subAnchors };
-          } catch (e) {
-            done++;
-            setProgress({ done, total: N });
-            logErr(`[anchors] cluster "${c.name}" ÉCHEC : ${e.message}`);
-            failures.push(c.name);
-            return c; // on garde le cluster sans ancres
-          }
-        }));
-
-        const updatedCategories = await Promise.all(tasks);
-        if (failures.length === N) {
-          throw new Error(`Tous les appels d'ancres ont échoué (${N}/${N})`);
-        }
-        workingTaxo = {
-          ...workingTaxo,
-          categories: updatedCategories,
-          anchorsVersion: new Date().toISOString(),
-        };
-        if (onTaxoUpdate) onTaxoUpdate(workingTaxo);
-        const totalAnchors = updatedCategories.reduce(
-          (s, c) => s + (c.anchors?.length || 0) + Object.values(c.subAnchors || {}).reduce((ss, arr) => ss + arr.length, 0), 0,
-        );
-        if (failures.length > 0) {
-          logWarn(`[anchors] ${failures.length} cluster(s) sans ancres : ${failures.join(", ")} (fallback nom seul)`);
-        }
-        logOk(`[anchors] ${totalAnchors} ancres totales générées en ${Date.now() - tAnch}ms`);
-      } else {
-        logInfo(`[anchors] Ancres déjà présentes dans la taxo (version ${workingTaxo.anchorsVersion || "?"}), réutilisation`);
+        throw new Error("Aucune ancre dans la taxonomie. Retour à l'étape Ancres pour les générer.");
       }
+      const totalAnchors = workingTaxo.categories.reduce(
+        (s, c) => s + (c.anchors?.length || 0) + Object.values(c.subAnchors || {}).reduce((ss, arr) => ss + arr.length, 0), 0,
+      );
+      logInfo(`[anchors] Ancres présentes : ${totalAnchors} au total (version ${workingTaxo.anchorsVersion || "?"})`);
 
       // ─── 3. Construction des prototypes (avec ancres) ───────────────────
       const protos = buildPrototypes(workingTaxo);
@@ -363,7 +302,6 @@ export default function PhaseClassify({
   }
 
   const stageLabels = {
-    "anchors": "Génération des ancres LLM (one-shot)",
     "embed-protos": "Encodage des prototypes (centroide)",
     "embed-verbatims": "Encodage des verbatims",
     "classify": "Classification multi-label",
@@ -392,33 +330,12 @@ export default function PhaseClassify({
           <span>·</span>
           <span><b style={{ color: TEXT }}>{(taxo?.categories || []).reduce((s, c) => s + (c.subCategories?.length || 0), 0)}</b> sous-clusters</span>
           <span>·</span>
-          {(taxo?.categories || []).every((c) => Array.isArray(c.anchors) && c.anchors.length > 0) ? (
-            <span style={{ color: POS }}>
-              ✓ Ancres LLM en cache <span style={{ color: MUTED, fontSize: 11 }}>({taxo.anchorsVersion?.slice(0, 10) || "version ?"})</span>
-              {!running && (
-                <button
-                  onClick={() => {
-                    if (!confirm("Régénérer les ancres ? Cela consommera ~$0.05 d'API Anthropic et écrasera les ancres actuelles.")) return;
-                    if (onTaxoUpdate) {
-                      const cleared = {
-                        ...taxo,
-                        categories: taxo.categories.map((c) => ({ ...c, anchors: undefined, subAnchors: undefined })),
-                        anchorsVersion: null,
-                      };
-                      onTaxoUpdate(cleared);
-                    }
-                  }}
-                  style={{ ...buttonSecondary, padding: "2px 8px", fontSize: 10, marginLeft: 8 }}
-                >
-                  Régénérer
-                </button>
-              )}
+          <span style={{ color: POS }}>
+            ✓ {(taxo?.categories || []).reduce((s, c) => s + (c.anchors?.length || 0) + Object.values(c.subAnchors || {}).reduce((ss, a) => ss + a.length, 0), 0)} ancres LLM
+            <span style={{ color: MUTED, fontSize: 11, marginLeft: 4 }}>
+              ({taxo?.anchorsVersion?.slice(0, 16).replace("T", " ") || "version ?"})
             </span>
-          ) : (
-            <span style={{ color: ACCENT }}>
-              ⚠ Ancres LLM non générées — un appel sera fait au lancement (~$0.05)
-            </span>
-          )}
+          </span>
         </div>
 
         {!running && !results && (
