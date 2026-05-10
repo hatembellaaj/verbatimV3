@@ -1,0 +1,79 @@
+@startuml DORIA-Profiler-Architecture
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam componentBackgroundColor #F5F5F5
+skinparam componentBorderColor #444444
+skinparam noteBackgroundColor #FFF7E0
+skinparam noteBorderColor #C9A227
+skinparam ArrowColor #444444
+skinparam defaultFontName "Helvetica"
+skinparam componentFontSize 13
+
+title <size:16>**DORIA Profiler — Architecture Docker (3 services)**</size>
+
+actor Utilisateur as user
+
+cloud "api.anthropic.com" as anthropic #LightBlue
+cloud "huggingface.co\n(au build uniquement)" as hf #LightBlue
+
+node "Serveur Debian (57.128.75.61)" {
+
+  package "doria-profiler (docker compose --profile prod)" {
+
+    component "**web**\nnginx + bundle React" as web #lightyellow {
+      port "80 → ${WEB_PORT:-8080}" as p80
+    }
+
+    component "**api**\nNode 20 + Express\n(proxy Anthropic)" as api #lightgreen {
+      port "3001 (interne)" as p3001
+    }
+
+    component "**embed**\nPython 3.11 + FastAPI\n+ sentence-transformers\n(modèle Solon FR baké, 768 dim)" as embed #lightcoral {
+      port "8000 (interne)" as p8000
+    }
+
+  }
+
+  database "**.env** (root)" as env {
+    note right of env
+      ANTHROPIC_API_KEY=...
+      WEB_PORT=8080
+    end note
+  }
+
+}
+
+user -down-> p80 : http://57.128.75.61:8080/
+
+p80 -down-> p3001 : nginx route\n/api/messages → http://api:3001/api/messages
+p80 -down-> p8000 : nginx route\n/api/embed/ → http://embed:8000/
+
+p3001 -right-> anthropic : POST /v1/messages\n(x-api-key injectée)
+
+env -right-> api : ANTHROPIC_API_KEY (au boot)
+
+hf .down.> embed : modèle Solon\ntéléchargé au\n`docker build`
+
+note bottom of web
+  **Bundle servi** :
+  • SPA React (PhaseImport, Discover, Anchors, Calibrate,
+    Analyse, Classify, Results)
+  • Routage SPA via try_files → /index.html
+  • Aucune clé API dans le bundle JS
+end note
+
+note bottom of api
+  Endpoints exposés (via nginx) :
+  • GET  /api/health         → état du service
+  • POST /api/messages       → relais Anthropic
+                              (timeout 120s, retry-after forwardé)
+end note
+
+note bottom of embed
+  Endpoints exposés (via nginx) :
+  • GET  /api/embed/health   → modèle + dim
+  • POST /api/embed/embed    → batch d'embeddings
+                              (max_batch=256, ~30 verbatims/s)
+end note
+
+@enduml

@@ -1,0 +1,111 @@
+@startuml DORIA-Profiler-Flux
+!theme plain
+skinparam backgroundColor #FFFFFF
+skinparam activityBackgroundColor #F5F5F5
+skinparam activityBorderColor #444444
+skinparam activityFontSize 13
+skinparam noteBackgroundColor #FFF7E0
+skinparam noteBorderColor #C9A227
+skinparam noteFontSize 11
+skinparam ArrowColor #444444
+skinparam defaultFontName "Helvetica"
+
+title <size:18>**DORIA Profiler v3.1 — Flux complet d'analyse de verbatims**</size>
+
+start
+
+:**Étape 1 — IMPORT**;
+note right
+  • Upload CSV (auto-détection séparateur , ; tab)
+  • Auto-mapping des colonnes (verbatim, note, date, profil…)
+  • Saisie du **contexte sectoriel** (réutilisé partout)
+  • Stats descriptives (couverture, longueur moyenne…)
+  • Aperçu des 5 premiers verbatims
+end note
+
+:**Étape 2 — DÉCOUVERTE**\n(génération de la taxonomie);
+note right
+  Choix :
+  • **Génération par IA** : 1 appel LLM Claude
+    sur un échantillon de N verbatims
+    (défaut 100, paramétrable 30→500)
+  • **Saisie manuelle**
+  Sortie : arbre clusters + sous-clusters,
+  éditable (renommer / ajouter / supprimer).
+  Coût IA : ~$0.01
+end note
+
+if (**Mode de classification ?**) then (LLM)
+
+  :**Étape 3a — CALIBRATION (4 passes)**;
+  note right
+    Boucle inductive sur 4 sous-passes :
+    • P1 Découverte (100 verbatims)
+    • P2 Validation (200)
+    • P3 Stabilisation (200)
+    • P4 Résidus (50 hors-échantillon)
+    → Taxonomie figée + profils psychographiques
+    Coût : ~$0.90 / 1000 verbatims
+  end note
+
+  :**Étape 4a — ANALYSE LLM**\n(par batches);
+  note right
+    BATCH_SIZE = 10  ·  CONCURRENCY = 2
+    ~50 appels LLM Claude pour 500 verbatims
+    Sortie par verbatim :
+    • catégorie + sous-catégorie + confidence
+    • tonalité (pos / neg / neutre / mixte)
+    • profil psy + PAD (valence, arousal, dominance)
+    • biais cognitifs + motivations + signaux
+    Coût : ~$3 / 1000 verbatims
+  end note
+
+else (Embeddings local)
+
+  :**Étape 3b — ANCRES SÉMANTIQUES**;
+  note right
+    1 appel LLM **par cluster** (concurrency 2,
+    max_tokens 1500) → 5 phrases-exemples cluster
+    + 4 par sous-cluster.
+    Édition libre par l'utilisateur (modifier /
+    ajouter / supprimer chaque phrase).
+    Stockées dans la taxo, mises en cache.
+    Coût : ~$0.05 par projet (one-shot)
+  end note
+
+  :**Étape 4b — CLASSIFICATION HYBRIDE**\n(zéro LLM dans la boucle);
+  note right
+    Pipeline 100% local :
+    1. Embeddings Solon-FR (768 dim) sur prototypes
+       (centroide nom + ancres) et sur verbatims.
+    2. BM25 lexical en complément.
+    3. Score combiné : 70% embed + 30% BM25.
+    4. **Multi-label** : top + tous les labels
+       avec score ≥ 85% du top, cap à 3.
+    5. Seuil UNSURE = 0.5.
+    Coût : 0€  ·  Vitesse : ~30 verbatims/s
+  end note
+
+endif
+
+:**Étape 5 — RÉSULTATS**;
+note right
+  4 onglets visualisation :
+  • **Catégories** : 4 quadrants vol×insat, distrib
+  • **Évolution** : timeline mensuelle par tonalité
+  • **Profils & Psy** : radar PAD, biais, tension matrix
+  • **Items bruts** : table filtrable + drill-down
+  Multi-label : badge +N, breakdown dans le drill-down.
+  Export CSV complet (incl. multi-labels).
+  Chat contextuel (LLM, sur stats agrégées).
+end note
+
+stop
+
+footer
+  Persistance localStorage entre toutes les phases ·
+  Logs visibles dans la console intégrée et la DevTools navigateur ·
+  Architecture : nginx (web) + Express proxy (api) + FastAPI/Solon (embed)
+endfooter
+
+@enduml

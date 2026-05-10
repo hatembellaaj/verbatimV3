@@ -44,7 +44,7 @@ export default function PhaseClassify({
     const t0 = Date.now();
     try {
       logInfo("════════ Démarrage classification hybride ════════");
-      logInfo(`Paramètres : threshold=${CONFIDENCE_THRESHOLD} · poids embed=${EMBED_WEIGHT} · BM25=${BM25_WEIGHT} · ratio multi=${MULTI_RATIO} · max labels=${MAX_LABELS}`);
+      logInfo(`Paramètres : threshold=${CONFIDENCE_THRESHOLD} · poids embed=${EMBED_WEIGHT} · BM25=${BM25_WEIGHT} · ratio multi=${MULTI_RATIO} · plafond labels=∞ (sans limite, filtre par ratio uniquement)`);
       logInfo(`Corpus : ${items.length} verbatims · contexte="${contexte || '(aucun)'}"`);
 
       // ─── 1. Health check du service embed ──────────────────────────────
