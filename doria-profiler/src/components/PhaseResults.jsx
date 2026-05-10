@@ -703,15 +703,21 @@ function expandLabels(item) {
 function buildStats(items, taxo, psycho) {
   const total = items.length;
 
-  // Par catégorie — chaque verbatim ajoute 1 à chacune de ses catégories
+  // Par catégorie — chaque verbatim ajoute 1 à chacune de ses catégories UNIQUES
+  // (déduplication au niveau cluster : un verbatim avec 2 sous-clusters de
+  // "Attractions" compte 1 seule fois pour Attractions mais 2 fois dans subDist).
   const catMap = {};
   items.forEach((i) => {
     const labels = expandLabels(i);
+    const seenClusters = new Set();
     for (const { category, subCategory } of labels) {
       const c = category;
       if (!catMap[c]) catMap[c] = { name: c, count: 0, pos: 0, neg: 0, neutre: 0, mixte: 0, subDist: {} };
-      catMap[c].count++;
-      catMap[c][i.tonality || "neutre"] = (catMap[c][i.tonality || "neutre"] || 0) + 1;
+      if (!seenClusters.has(c)) {
+        catMap[c].count++;
+        catMap[c][i.tonality || "neutre"] = (catMap[c][i.tonality || "neutre"] || 0) + 1;
+        seenClusters.add(c);
+      }
       const sub = subCategory || "—";
       catMap[c].subDist[sub] = (catMap[c].subDist[sub] || 0) + 1;
     }
@@ -769,7 +775,11 @@ function buildStats(items, taxo, psycho) {
     tlMap[m][i.tonality || "neutre"] = (tlMap[m][i.tonality || "neutre"] || 0) + 1;
 
     if (!tlCatMap[m]) tlCatMap[m] = { month: m };
+    // Déduplication cluster-level (un verbatim compte 1× par cluster même s'il a plusieurs sub)
+    const seenInMonth = new Set();
     for (const { category } of expandLabels(i)) {
+      if (seenInMonth.has(category)) continue;
+      seenInMonth.add(category);
       tlCatMap[m][category] = (tlCatMap[m][category] || 0) + 1;
     }
   });
@@ -777,11 +787,14 @@ function buildStats(items, taxo, psycho) {
   const timelineByCat = Object.values(tlCatMap).sort((a, b) => a.month.localeCompare(b.month));
 
   // Tension matrix : profil × catégorie → {count, neg}
-  // Multi-label : un verbatim incrémente toutes ses paires (profil, catégorie)
+  // Déduplication cluster-level (1 verbatim ne compte qu'une fois par paire profil×cluster)
   const tensionMatrix = {};
   items.forEach((i) => {
     const p = i.psychoProfile || "Indéterminé";
+    const seenClusters = new Set();
     for (const { category: c } of expandLabels(i)) {
+      if (seenClusters.has(c)) continue;
+      seenClusters.add(c);
       if (!tensionMatrix[p]) tensionMatrix[p] = {};
       if (!tensionMatrix[p][c]) tensionMatrix[p][c] = { count: 0, neg: 0 };
       tensionMatrix[p][c].count++;

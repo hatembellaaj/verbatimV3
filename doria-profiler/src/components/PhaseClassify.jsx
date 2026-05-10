@@ -17,8 +17,10 @@ import {
 const CONFIDENCE_THRESHOLD = 0.5;
 const EMBED_WEIGHT = 0.7;
 const BM25_WEIGHT = 0.3;
-const MULTI_RATIO = 0.85;     // un label secondaire est gardé si son score ≥ 85% du top
-const MAX_LABELS = 3;          // nombre max de catégories par verbatim
+const MULTI_RATIO = 0.85;      // un label secondaire est gardé si son score ≥ 85% du top
+                               // (s'applique aux clusters ET aux sous-clusters)
+                               // PAS DE PLAFOND : un verbatim peut être associé
+                               // à autant de catégories/sous-catégories que pertinent
 const SAMPLE_LOG_DETAILED = 5; // nb verbatims pour lesquels on log le breakdown complet
 
 export default function PhaseClassify({
@@ -161,7 +163,7 @@ export default function PhaseClassify({
       if (cancelRef.current) return;
       setStage("classify");
       setProgress({ done: 0, total: items.length });
-      logInfo(`[classify] Démarrage classification multi-label (max ${MAX_LABELS} labels/verbatim, ratio ${MULTI_RATIO})`);
+      logInfo(`[classify] Démarrage classification multi-label (sans plafond, ratio ${MULTI_RATIO})`);
 
       const enriched = [];
       let unsureCount = 0;
@@ -182,7 +184,8 @@ export default function PhaseClassify({
           weights: { embed: EMBED_WEIGHT, bm25: BM25_WEIGHT },
           threshold: CONFIDENCE_THRESHOLD,
           ratio: MULTI_RATIO,
-          maxLabels: MAX_LABELS,
+          // pas de maxLabels → un verbatim peut être associé à autant de
+          // catégories et sous-catégories que pertinent (filtre uniquement par ratio)
         });
 
         const isUnsure = !result.primary || result.primary.cluster?.id === "UNSURE";
@@ -319,7 +322,8 @@ export default function PhaseClassify({
           Classification 100% locale, sans LLM dans la boucle. Score combiné :
           <span style={{ color: TEAL }}> {Math.round(EMBED_WEIGHT * 100)}% embeddings</span> +
           <span style={{ color: TEAL }}> {Math.round(BM25_WEIGHT * 100)}% BM25</span>.
-          Un verbatim peut recevoir <b>jusqu'à {MAX_LABELS} catégories</b> si leurs scores sont ≥ {Math.round(MULTI_RATIO * 100)}% du top.
+          Un verbatim peut recevoir <b>plusieurs catégories et sous-catégories</b> à la fois
+          (toutes celles dont le score est ≥ {Math.round(MULTI_RATIO * 100)}% du top, sans plafond).
           Sous le seuil {CONFIDENCE_THRESHOLD} → bucket <code>UNSURE</code>.
         </p>
 

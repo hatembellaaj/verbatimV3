@@ -174,23 +174,22 @@ export async function fetchEmbeddings(texts, { batchSize = 128, onProgress = nul
 }
 
 // ───────────────────────────────────────────────────────────────────────────
-// Classification MULTI-LABEL d'UN verbatim.
+// Classification MULTI-LABEL d'UN verbatim — pas de plafond sur le nombre
+// de catégories ni de sous-catégories. Un verbatim peut être associé à
+// plusieurs clusters ET, dans chaque cluster retenu, à plusieurs sous-clusters
+// si leurs scores sont ≥ ratio × top.
+//
 // Retourne :
-//   - primary : top-1 label (cluster + sous-cluster + confidences)
-//   - labels  : tous les labels qui dépassent le seuil ET sont assez proches du top
-//               (combined ≥ ratio × top_combined), capés à maxLabels
-//   - debug   : breakdown complet des scores (utile pour les logs)
+//   - primary : top-1 label (premier de la liste)
+//   - labels  : tous les couples (cluster, sous-cluster) retenus
+//   - debug   : breakdown complet des scores
 // Args :
-//   vEmb : embedding du verbatim (array)
-//   vTokens : tokens du verbatim
-//   protos : sortie de buildPrototypes()
-//   clusterEmbs : embeddings des protos cluster (même ordre que protos)
-//   subEmbsByCluster : embeddings sous-cluster groupés par cluster
-//   bm25Cluster, bm25SubByCluster : index BM25 pré-calculés
+//   vEmb, vTokens, protos, clusterEmbs, subEmbsByCluster,
+//   bm25Cluster, bm25SubByCluster
 //   weights : { embed, bm25 } (somme = 1)
-//   threshold : seuil absolu UNSURE sur le score combiné [0,1]
-//   ratio    : ratio min vs top pour qu'un label secondaire soit retenu (0.85 par défaut)
-//   maxLabels : nombre max de labels par verbatim (3 par défaut)
+//   threshold  : seuil absolu UNSURE sur le score combiné [0,1]
+//   ratio      : ratio min vs top pour qu'un label secondaire soit retenu (0.85 par défaut)
+//   maxLabels  : optionnel, plafond — par défaut Infinity (pas de limite)
 // ───────────────────────────────────────────────────────────────────────────
 export function classifyVerbatim({
   vEmb, vTokens, protos,
@@ -199,7 +198,7 @@ export function classifyVerbatim({
   weights = { embed: 0.7, bm25: 0.3 },
   threshold = 0.5,
   ratio = 0.85,
-  maxLabels = 3,
+  maxLabels = Infinity,
 }) {
   if (!protos.length) {
     return {
@@ -249,51 +248,80 @@ export function classifyVerbatim({
     };
   }
 
-  // ─── Sélection multi-label : top + tous ceux ≥ ratio × top ──────────────
+  // ─── Sélection multi-cluster : top + tous ≥ ratio × top, pas de plafond ──
   const minScore = Math.max(threshold, ratio * topScore);
   const keptIdx = combined
     .map((s, i) => ({ i, s }))
     .filter((x) => x.s >= minScore)
     .sort((a, b) => b.s - a.s)
-    .slice(0, maxLabels)
+    .slice(0, maxLabels) // Infinity par défaut → pas de plafond
     .map((x) => x.i);
 
-  // Pour chaque label retenu, calcul du meilleur sous-cluster
-  const labels = keptIdx.map((ci) => {
+  // ─── Pour CHAQUE cluster retenu, on retient AUSSI plusieurs sous-clusters
+  // si leurs scores sont ≥ ratio × top sub-score. Émet une entrée par couple.
+  const labels = [];
+  for (const ci of keptIdx) {
     const cluster = protos[ci];
     const clusterCombined = combined[ci];
 
-    let subcluster = null;
-    let subCombined = 0;
-    if (cluster.subclusters.length) {
-      const subEmbs = subEmbsByCluster[ci] || [];
-      const bm25Sub = bm25SubByCluster[ci];
-      const subCos = subEmbs.map((se) => Math.max(0, cosine(vEmb, se)));
-      const subBm = cluster.subclusters.map((_, si) => bm25Score(vTokens, si, bm25Sub));
-      const subCosNorm = minmax(subCos);
-      const subBmNorm = minmax(subBm);
-      const subComb = subCos.map((_, i) => weights.embed * subCosNorm[i] + weights.bm25 * subBmNorm[i]);
-      let sIdx = 0;
-      for (let i = 1; i < subComb.length; i++) if (subComb[i] > subComb[sIdx]) sIdx = i;
-      subcluster = cluster.subclusters[sIdx];
-      subCombined = subComb[sIdx];
+    if (!cluster.subclusters.length) {
+      labels.push({
+        cluster: { idx: cluster.idx, label: cluster.label, id: slug(cluster.label) },
+        subcluster: null,
+        confidence_cluster: round3(clusterCombined),
+        confidence_subcluster: 0,
+        scores: { embed: round3(cosScores[ci]), bm25: round3(bm25Scores[ci]) },
+      });
+      continue;
     }
 
-    return {
-      cluster: { idx: cluster.idx, label: cluster.label, id: slug(cluster.label) },
-      subcluster: subcluster
-        ? { idx: subcluster.idx, label: subcluster.label, id: slug(subcluster.label) }
-        : null,
-      confidence_cluster: round3(clusterCombined),
-      confidence_subcluster: round3(subCombined),
-      scores: { embed: round3(cosScores[ci]), bm25: round3(bm25Scores[ci]) },
-    };
-  });
+    const subEmbs = subEmbsByCluster[ci] || [];
+    const bm25Sub = bm25SubByCluster[ci];
+    const subCos = subEmbs.map((se) => Math.max(0, cosine(vEmb, se)));
+    const subBm = cluster.subclusters.map((_, si) => bm25Score(vTokens, si, bm25Sub));
+    const subCosNorm = minmax(subCos);
+    const subBmNorm = minmax(subBm);
+    const subComb = subCos.map((_, i) => weights.embed * subCosNorm[i] + weights.bm25 * subBmNorm[i]);
+
+    // Top sub
+    let topSubIdx = 0;
+    for (let i = 1; i < subComb.length; i++) if (subComb[i] > subComb[topSubIdx]) topSubIdx = i;
+    const topSubScore = subComb[topSubIdx];
+    const subMinScore = ratio * topSubScore;
+
+    // Multi-sous-cluster : tous les sous ≥ ratio × top, pas de plafond
+    const subKept = subComb
+      .map((s, i) => ({ i, s }))
+      .filter((x) => x.s >= subMinScore && x.s > 0)
+      .sort((a, b) => b.s - a.s);
+
+    if (!subKept.length) {
+      // Aucun sous au-dessus du ratio (cas dégénéré : tous nuls) — on retient quand même le top
+      subKept.push({ i: topSubIdx, s: topSubScore });
+    }
+
+    for (const { i: sIdx, s: sScore } of subKept) {
+      const sub = cluster.subclusters[sIdx];
+      labels.push({
+        cluster: { idx: cluster.idx, label: cluster.label, id: slug(cluster.label) },
+        subcluster: { idx: sub.idx, label: sub.label, id: slug(sub.label) },
+        confidence_cluster: round3(clusterCombined),
+        confidence_subcluster: round3(sScore),
+        scores: { embed: round3(cosScores[ci]), bm25: round3(bm25Scores[ci]) },
+      });
+    }
+  }
 
   return {
     primary: labels[0],
     labels,
-    debug: { topScore: round3(topScore), minScore: round3(minScore), kept: labels.length, breakdown: breakdown.slice(0, 5) },
+    debug: {
+      topScore: round3(topScore),
+      minScore: round3(minScore),
+      keptClusters: keptIdx.length,
+      keptLabels: labels.length,
+      breakdown: breakdown.slice(0, 5),
+    },
   };
 }
 
