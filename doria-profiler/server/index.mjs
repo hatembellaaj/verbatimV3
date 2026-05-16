@@ -1,8 +1,15 @@
-// Proxy Anthropic — relaie POST /api/messages vers api.anthropic.com avec la clé serveur.
-// Le frontend appelle /api/messages (même origine), le proxy ajoute x-api-key.
-// Avantage : la clé n'apparaît jamais dans le bundle JS du navigateur.
+// Proxy Anthropic + API métier (catégories, projets) — DORIA Profiler.
+// Routes :
+//   GET  /api/health           → état (clé Anthropic + DB)
+//   POST /api/messages         → relais Anthropic (clé injectée serveur)
+//   GET/POST/DELETE /api/categories[/:id]
+//   GET/POST/DELETE /api/projects[/:id]
 
 import express from "express";
+import { runMigrations } from "./db/migrate.mjs";
+import { pool } from "./db/pool.mjs";
+import { router as categoriesRouter } from "./routes/categories.mjs";
+import { router as projectsRouter } from "./routes/projects.mjs";
 
 const PORT = Number(process.env.PORT || 3001);
 const API_KEY = process.env.ANTHROPIC_API_KEY || "";
@@ -15,20 +22,30 @@ if (!API_KEY) {
 }
 
 const app = express();
-// Les prompts peuvent être gros (~50 KB pour un batch), on monte la limite à 5 MB.
-app.use(express.json({ limit: "5mb" }));
+// Limite à 20 MB : payload d'un projet complet (verbatims + classifications) peut dépasser 5 MB.
+app.use(express.json({ limit: "20mb" }));
 
-// Health-check trivial — utilisé par docker compose et par l'UI au démarrage.
-app.get("/api/health", (_, res) => {
-  res.json({ ok: true, hasKey: !!API_KEY });
+// ─── Health (incl. état DB) ────────────────────────────────────────────
+app.get("/api/health", async (_req, res) => {
+  let dbOk = false;
+  try {
+    await pool.query("SELECT 1");
+    dbOk = true;
+  } catch {
+    dbOk = false;
+  }
+  res.json({ ok: true, hasKey: !!API_KEY, db: dbOk });
 });
 
+// ─── Routes métier ──────────────────────────────────────────────────────
+app.use("/api/categories", categoriesRouter);
+app.use("/api/projects", projectsRouter);
+
+// ─── Proxy Anthropic ────────────────────────────────────────────────────
 app.post("/api/messages", async (req, res) => {
   if (!API_KEY) {
     return res.status(500).json({ error: { message: "Clé API manquante côté serveur (ANTHROPIC_API_KEY)" } });
   }
-
-  // Timeout dur côté proxy au cas où Anthropic ne répond pas.
   const ctrl = new AbortController();
   const t = setTimeout(() => ctrl.abort(), REQ_TIMEOUT_MS);
 
@@ -45,7 +62,6 @@ app.post("/api/messages", async (req, res) => {
     });
     clearTimeout(t);
 
-    // Forward le retry-after pour que le client puisse respecter la consigne.
     const retryAfter = upstream.headers.get("retry-after");
     if (retryAfter) res.set("retry-after", retryAfter);
 
@@ -63,6 +79,16 @@ app.post("/api/messages", async (req, res) => {
   }
 });
 
-app.listen(PORT, "0.0.0.0", () => {
-  console.log(`✓ Proxy Anthropic up on :${PORT} (key: ${API_KEY ? "OK" : "MANQUANTE"})`);
-});
+// ─── Boot ───────────────────────────────────────────────────────────────
+(async () => {
+  try {
+    await runMigrations();
+    console.log("[db] Migrations OK");
+  } catch (e) {
+    console.error("[db] ÉCHEC migrations :", e.message);
+    // On démarre quand même — l'endpoint /api/health signalera db=false
+  }
+  app.listen(PORT, "0.0.0.0", () => {
+    console.log(`✓ DORIA api up on :${PORT} (key: ${API_KEY ? "OK" : "MANQUANTE"})`);
+  });
+})();

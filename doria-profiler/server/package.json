@@ -1,15 +1,16 @@
 {
-  "name": "doria-profiler-proxy",
-  "version": "1.0.0",
+  "name": "doria-profiler-api",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
-  "description": "Proxy Anthropic — relaie les appels du frontend en injectant la clé API côté serveur",
+  "description": "API DORIA — proxy Anthropic + persistance Postgres (catégories, projets, ancres)",
   "main": "index.mjs",
   "scripts": {
     "start": "node index.mjs"
   },
   "dependencies": {
-    "express": "^4.19.2"
+    "express": "^4.19.2",
+    "pg": "^8.12.0"
   },
   "engines": {
     "node": ">=20"

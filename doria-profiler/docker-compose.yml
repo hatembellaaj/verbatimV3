@@ -32,7 +32,30 @@ services:
     restart: unless-stopped
 
   # ─────────────────────────────────────────────────────────────────────────
-  # Service API — proxy Node Express qui détient la clé Anthropic
+  # Service DB — PostgreSQL 16 + pgvector (image officielle pgvector/pgvector).
+  # Volume persistant `db_data` pour les données. Healthcheck pour gating de `api`.
+  # ─────────────────────────────────────────────────────────────────────────
+  db:
+    profiles: ["prod"]
+    image: pgvector/pgvector:pg16
+    container_name: doria-profiler-db
+    environment:
+      POSTGRES_USER: ${DB_USER:-doria}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-doria}
+      POSTGRES_DB: ${DB_NAME:-doria}
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-doria} -d ${DB_NAME:-doria}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # Service API — proxy Node Express + persistance PG (projets, catégories, ancres)
   # Pas exposé publiquement : seul `web` y accède via le réseau Docker interne.
   # ─────────────────────────────────────────────────────────────────────────
   api:
@@ -41,9 +64,17 @@ services:
       context: ./server
       dockerfile: Dockerfile
     container_name: doria-profiler-api
+    depends_on:
+      db:
+        condition: service_healthy
     environment:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       PORT: "3001"
+      DB_HOST: db
+      DB_PORT: "5432"
+      DB_USER: ${DB_USER:-doria}
+      DB_PASSWORD: ${DB_PASSWORD:-doria}
+      DB_NAME: ${DB_NAME:-doria}
     expose:
       - "3001"
     restart: unless-stopped
@@ -80,3 +111,7 @@ services:
     ports:
       - "${WEB_PORT:-8080}:80"
     restart: unless-stopped
+
+# Volumes persistants — `db_data` survit aux down/up et aux rebuilds.
+volumes:
+  db_data:

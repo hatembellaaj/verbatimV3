@@ -189,6 +189,8 @@ export default function App() {
             items={enriched}
             taxo={taxo}
             psycho={psycho}
+            contexte={contexte}
+            mode={mode}
             onBack={() => setPhase(mode === "embed" ? "classify" : "analyse")}
             onReset={reset}
           />
