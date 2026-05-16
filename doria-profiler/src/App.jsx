@@ -9,6 +9,7 @@ import PhaseAnalyse from "./components/PhaseAnalyse.jsx";
 import PhaseAnchors from "./components/PhaseAnchors.jsx";
 import PhaseClassify from "./components/PhaseClassify.jsx";
 import PhaseResults from "./components/PhaseResults.jsx";
+import SaveProjectModal from "./components/SaveProjectModal.jsx";
 import { save, load, clearAll } from "./lib/storage.js";
 import { MOCK_AI } from "./api/claude.js";
 import {
@@ -41,6 +42,8 @@ export default function App() {
   const [psycho, setPsycho] = useState(null);
   const [contexte, setContexte] = useState("");
   const [hydrated, setHydrated] = useState(false);
+  const [saveOpen, setSaveOpen] = useState(false);
+  const [savedId, setSavedId] = useState(null);
 
   // Hydratation initiale depuis localStorage
   useEffect(() => {
@@ -104,9 +107,40 @@ export default function App() {
               MODE DÉMO
             </span>
           )}
+          {savedId && (
+            <span style={{ fontSize: 10, color: POS, padding: "4px 8px" }}>
+              ✓ id {savedId}
+            </span>
+          )}
+          {/* Sauvegarde accessible depuis n'importe quelle phase, dès qu'il y a quelque chose à persister */}
+          <button
+            onClick={() => setSaveOpen(true)}
+            disabled={items.length === 0 && !taxo}
+            title={items.length === 0 && !taxo ? "Rien à sauvegarder pour le moment" : "Sauvegarder le projet en base"}
+            style={{
+              ...buttonSecondary,
+              padding: "6px 12px",
+              fontSize: 11,
+              opacity: items.length === 0 && !taxo ? 0.4 : 1,
+              cursor: items.length === 0 && !taxo ? "not-allowed" : "pointer",
+            }}
+          >
+            💾 Sauvegarder
+          </button>
           <button onClick={reset} style={{ ...buttonSecondary, padding: "6px 12px", fontSize: 11 }}>Nouveau</button>
         </div>
       </header>
+
+      <SaveProjectModal
+        open={saveOpen}
+        onClose={() => setSaveOpen(false)}
+        onSaved={(r) => setSavedId(r.id)}
+        taxo={taxo}
+        enriched={enriched.length > 0 ? enriched : items}
+        contexte={contexte}
+        mode={mode}
+        stats={null}
+      />
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
         {phase === "import" && (

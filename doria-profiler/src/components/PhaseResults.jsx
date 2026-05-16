@@ -10,7 +10,6 @@ import {
 import { downloadCSV, parseDate, monthKey, parseJSON } from "../lib/utils.js";
 import { callClaude, MOCK_AI } from "../api/claude.js";
 import { promptContextChat } from "../lib/prompts.js";
-import SaveProjectModal from "./SaveProjectModal.jsx";
 import {
   PANEL, PANEL_2, BORDER, MUTED, TEXT, GOLD, TEAL, ACCENT, POS, NEG, NEUTRAL, CAT_COLORS,
   panelStyle, buttonPrimary, buttonSecondary, inputStyle,
@@ -26,8 +25,6 @@ const TABS = [
 export default function PhaseResults({ items, taxo, psycho, contexte, mode, onBack, onReset }) {
   const [tab, setTab] = useState("categories");
   const [drillItem, setDrillItem] = useState(null);
-  const [saveOpen, setSaveOpen] = useState(false);
-  const [savedId, setSavedId] = useState(null);
 
   // Stats agrégées (utilisés par tous les onglets ET le chat)
   const stats = useMemo(() => buildStats(items, taxo, psycho), [items, taxo, psycho]);
@@ -96,28 +93,12 @@ export default function PhaseResults({ items, taxo, psycho, contexte, mode, onBa
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <button onClick={onBack} style={buttonSecondary}>← Retour à l'analyse</button>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          {savedId && (
-            <span style={{ fontSize: 11, color: POS }}>✓ Projet sauvegardé (id {savedId})</span>
-          )}
           <button onClick={exportCSV} style={buttonSecondary}>↓ Export CSV (UTF-8)</button>
-          <button onClick={() => setSaveOpen(true)} style={buttonSecondary}>
-            💾 Sauvegarder en base
-          </button>
           <button onClick={onReset} style={buttonPrimary}>Nouveau projet</button>
         </div>
       </div>
 
       {drillItem && <DrillPanel item={drillItem} onClose={() => setDrillItem(null)} />}
-      <SaveProjectModal
-        open={saveOpen}
-        onClose={() => setSaveOpen(false)}
-        onSaved={(r) => setSavedId(r.id)}
-        taxo={taxo}
-        enriched={items}
-        contexte={contexte}
-        mode={mode}
-        stats={stats}
-      />
     </div>
   );
 }

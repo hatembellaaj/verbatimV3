@@ -25,9 +25,14 @@ RUN printf '%s\n' \
     '    index index.html;' \
     '    client_max_body_size 10m;' \
     '' \
+    '    # Resolver Docker interne — force la re-résolution DNS des upstreams' \
+    '    # quand les containers api/embed sont recréés (sinon nginx garde l'\''ancienne IP).' \
+    '    resolver 127.0.0.11 valid=10s ipv6=off;' \
+    '' \
     '    # Service embeddings local (Solon FR) — doit être AVANT location /api/' \
     '    location /api/embed/ {' \
-    '        proxy_pass http://embed:8000/;' \
+    '        set $embed_upstream http://embed:8000;' \
+    '        proxy_pass $embed_upstream/;' \
     '        proxy_http_version 1.1;' \
     '        proxy_set_header Host $host;' \
     '        proxy_read_timeout 180s;' \
@@ -35,9 +40,10 @@ RUN printf '%s\n' \
     '        client_max_body_size 20m;' \
     '    }' \
     '' \
-    '    # Proxy vers le service Node qui détient la clé Anthropic' \
+    '    # Proxy vers le service Node (Anthropic + DB)' \
     '    location /api/ {' \
-    '        proxy_pass http://api:3001/api/;' \
+    '        set $api_upstream http://api:3001;' \
+    '        proxy_pass $api_upstream$request_uri;' \
     '        proxy_http_version 1.1;' \
     '        proxy_set_header Host $host;' \
     '        proxy_set_header X-Real-IP $remote_addr;' \
