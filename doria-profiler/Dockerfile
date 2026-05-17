@@ -30,11 +30,11 @@ RUN printf '%s\n' \
     '    resolver 127.0.0.11 valid=10s ipv6=off;' \
     '' \
     '    # Service embeddings local (Solon FR) — doit être AVANT location /api/' \
-    '    # Avec variable on perd le strip auto du préfixe : on le fait explicitement.' \
+    '    # proxy_pass littéral avec trailing slash → nginx strippe automatiquement' \
+    '    # le préfixe /api/embed/. (Le service embed est rarement recréé donc le' \
+    '    # cache DNS n'\''est pas un problème ici, contrairement à api.)' \
     '    location /api/embed/ {' \
-    '        rewrite ^/api/embed/(.*)$ /$1 break;' \
-    '        set $embed_upstream http://embed:8000;' \
-    '        proxy_pass $embed_upstream;' \
+    '        proxy_pass http://embed:8000/;' \
     '        proxy_http_version 1.1;' \
     '        proxy_set_header Host $host;' \
     '        proxy_read_timeout 180s;' \
