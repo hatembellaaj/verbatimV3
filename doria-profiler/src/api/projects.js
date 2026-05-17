@@ -18,6 +18,9 @@ async function http(method, url, body) {
 // ─── Catégories ────────────────────────────────────────────────────────
 export const listCategories  = ()    => http("GET",    "/api/categories");
 export const getCategory     = (id)  => http("GET",    `/api/categories/${id}`);
+// Retourne la catégorie sous la forme exacte d'une taxo prête à hydrater
+// PhaseDiscover : { category, taxo: { categories: [{ name, subCategories, anchors, subAnchors }] } }
+export const getCategoryTaxo = (id)  => http("GET",    `/api/categories/${id}/taxo`);
 export const createCategory  = (data) => http("POST",  "/api/categories", data);
 export const deleteCategory  = (id)  => http("DELETE", `/api/categories/${id}`);
 

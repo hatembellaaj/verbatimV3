@@ -5,8 +5,9 @@ import React, { useState } from "react";
 import { sample, parseJSON } from "../lib/utils.js";
 import { callClaude } from "../api/claude.js";
 import { logInfo, logOk, logErr } from "../lib/logger.js";
+import CategoryPickerModal from "./CategoryPickerModal.jsx";
 import {
-  PANEL_2, BORDER, MUTED, TEXT, GOLD, TEAL,
+  PANEL_2, BORDER, MUTED, TEXT, GOLD, TEAL, ACCENT,
   panelStyle, buttonPrimary, buttonSecondary, inputStyle,
 } from "../lib/theme.js";
 
@@ -35,6 +36,7 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
   const [running, setRunning] = useState(false);
   const [error, setError] = useState(null);
   const [taxo, setTaxo] = useState(initialTaxo || null);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   async function discoverByAI() {
     if (sampleSize < 10) { setError("Au moins 10 verbatims requis"); return; }
@@ -146,6 +148,14 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
               <button onClick={manualStart} disabled={running} style={buttonSecondary}>
                 ✍️ Saisir manuellement
               </button>
+              <button
+                onClick={() => setPickerOpen(true)}
+                disabled={running}
+                style={{ ...buttonSecondary, borderColor: TEAL, color: TEAL }}
+                title="Charger une catégorie existante (clusters + ancres préchargés)"
+              >
+                📚 Charger depuis la base
+              </button>
             </div>
 
             {error && (
@@ -170,6 +180,15 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
                 {taxo.categories.length} cluster{taxo.categories.length > 1 ? "s" : ""} ·{" "}
                 {taxo.categories.reduce((acc, c) => acc + c.subCategories.length, 0)} sous-clusters
               </span>
+              {taxo._categoryName && (
+                <span style={{
+                  marginLeft: 10, fontSize: 10, color: TEAL,
+                  padding: "2px 8px", background: "rgba(34,211,238,0.1)",
+                  border: `1px solid ${TEAL}`, borderRadius: 12, fontWeight: 600,
+                }}>
+                  📚 chargé : {taxo._categoryName}
+                </span>
+              )}
             </h3>
             <button onClick={reset} style={{ ...buttonSecondary, padding: "4px 10px", fontSize: 11 }}>
               Recommencer
@@ -276,6 +295,15 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
           Au moins 1 cluster avec un nom non vide est requis.
         </p>
       )}
+
+      <CategoryPickerModal
+        open={pickerOpen}
+        onClose={() => setPickerOpen(false)}
+        onLoaded={(loadedTaxo) => {
+          setTaxo(loadedTaxo);
+          setError(null);
+        }}
+      />
     </div>
   );
 }

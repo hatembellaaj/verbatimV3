@@ -103,8 +103,8 @@ router.post("/", async (req, res) => {
         `, [catName, body.category.description || null]);
         categoryId = r.rows[0].id;
 
-        // Synchronise les clusters/sous-clusters de la catégorie depuis la taxo
-        // (on ajoute ceux qui manquent, sans toucher aux ancres existantes)
+        // Synchronise les clusters/sous-clusters de la catégorie + leurs ancres
+        // depuis la taxo. Idempotent grâce aux UNIQUE indexes (migration 002).
         for (let ci = 0; ci < (taxo?.categories || []).length; ci++) {
           const c = taxo.categories[ci];
           const cR = await client.query(`
@@ -114,13 +114,38 @@ router.post("/", async (req, res) => {
             RETURNING id
           `, [categoryId, c.name, c.description || null, ci]);
           const clusterId = cR.rows[0].id;
+
+          // Ancres niveau cluster
+          for (const text of (c.anchors || [])) {
+            const txt = String(text || "").trim();
+            if (!txt) continue;
+            await client.query(`
+              INSERT INTO anchors (cluster_id, text, source)
+              VALUES ($1, $2, 'llm')
+              ON CONFLICT (cluster_id, text) WHERE cluster_id IS NOT NULL DO NOTHING
+            `, [clusterId, txt]);
+          }
+
+          // Sous-clusters + ancres niveau sous-cluster
           for (let si = 0; si < (c.subCategories || []).length; si++) {
             const subName = c.subCategories[si];
-            await client.query(`
+            const sR = await client.query(`
               INSERT INTO subclusters (cluster_id, name, position)
               VALUES ($1, $2, $3)
               ON CONFLICT (cluster_id, name) DO UPDATE SET position = EXCLUDED.position
+              RETURNING id
             `, [clusterId, subName, si]);
+            const subId = sR.rows[0].id;
+            const subAnchorsList = (c.subAnchors || {})[subName] || [];
+            for (const text of subAnchorsList) {
+              const txt = String(text || "").trim();
+              if (!txt) continue;
+              await client.query(`
+                INSERT INTO anchors (subcluster_id, text, source)
+                VALUES ($1, $2, 'llm')
+                ON CONFLICT (subcluster_id, text) WHERE subcluster_id IS NOT NULL DO NOTHING
+              `, [subId, txt]);
+            }
           }
         }
       }

@@ -43,14 +43,110 @@ router.get("/:id", async (req, res) => {
           FROM subclusters WHERE cluster_id = ANY($1) ORDER BY position, name
         `, [clusterIds])
       : { rows: [] };
+    const subIds = subs.rows.map((s) => s.id);
+
+    // ─── Ancres : cluster-level + subcluster-level ─────────────────────
+    const clusterAnchors = clusterIds.length
+      ? await pool.query(`
+          SELECT cluster_id, text, source FROM anchors
+          WHERE cluster_id = ANY($1) AND subcluster_id IS NULL
+          ORDER BY id
+        `, [clusterIds])
+      : { rows: [] };
+    const subAnchors = subIds.length
+      ? await pool.query(`
+          SELECT subcluster_id, text, source FROM anchors
+          WHERE subcluster_id = ANY($1)
+          ORDER BY id
+        `, [subIds])
+      : { rows: [] };
+
+    const anchorsByCluster = {};
+    for (const a of clusterAnchors.rows) {
+      (anchorsByCluster[a.cluster_id] ||= []).push(a.text);
+    }
+    const anchorsBySubcluster = {};
+    for (const a of subAnchors.rows) {
+      (anchorsBySubcluster[a.subcluster_id] ||= []).push(a.text);
+    }
 
     const grouped = clusters.rows.map((c) => ({
       ...c,
-      subclusters: subs.rows.filter((s) => s.cluster_id === c.id),
+      anchors: anchorsByCluster[c.id] || [],
+      subclusters: subs.rows
+        .filter((s) => s.cluster_id === c.id)
+        .map((s) => ({ ...s, anchors: anchorsBySubcluster[s.id] || [] })),
     }));
     res.json({ ...cat.rows[0], clusters: grouped });
   } catch (e) {
     console.error("[categories] get:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// GET /api/categories/:id/taxo
+// Retourne la catégorie au FORMAT DE LA TAXO frontend :
+//   { categories: [{ name, subCategories: [], anchors: [], subAnchors: {} }] }
+// Utilisé par le bouton "Charger depuis la base" dans PhaseDiscover.
+// ─────────────────────────────────────────────────────────────────────────
+router.get("/:id/taxo", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const cat = await pool.query("SELECT * FROM categories WHERE id = $1", [id]);
+    if (!cat.rowCount) return res.status(404).json({ error: "Catégorie introuvable" });
+
+    const clusters = await pool.query(`
+      SELECT id, name FROM clusters WHERE category_id = $1 ORDER BY position, name
+    `, [id]);
+    const clusterIds = clusters.rows.map((c) => c.id);
+    const subs = clusterIds.length
+      ? await pool.query(`
+          SELECT id, cluster_id, name FROM subclusters
+          WHERE cluster_id = ANY($1) ORDER BY position, name
+        `, [clusterIds])
+      : { rows: [] };
+    const subIds = subs.rows.map((s) => s.id);
+
+    const clusterAnchors = clusterIds.length
+      ? await pool.query(`
+          SELECT cluster_id, text FROM anchors
+          WHERE cluster_id = ANY($1) AND subcluster_id IS NULL ORDER BY id
+        `, [clusterIds])
+      : { rows: [] };
+    const subAnchors = subIds.length
+      ? await pool.query(`
+          SELECT subcluster_id, text FROM anchors
+          WHERE subcluster_id = ANY($1) ORDER BY id
+        `, [subIds])
+      : { rows: [] };
+
+    const anchorsByCluster = {};
+    for (const a of clusterAnchors.rows) {
+      (anchorsByCluster[a.cluster_id] ||= []).push(a.text);
+    }
+    const subAnchorsByClusterAndName = {};
+    const subById = Object.fromEntries(subs.rows.map((s) => [s.id, s]));
+    for (const a of subAnchors.rows) {
+      const sub = subById[a.subcluster_id];
+      if (!sub) continue;
+      (subAnchorsByClusterAndName[sub.cluster_id] ||= {});
+      (subAnchorsByClusterAndName[sub.cluster_id][sub.name] ||= []).push(a.text);
+    }
+
+    const categories = clusters.rows.map((c) => ({
+      name: c.name,
+      subCategories: subs.rows.filter((s) => s.cluster_id === c.id).map((s) => s.name),
+      anchors: anchorsByCluster[c.id] || [],
+      subAnchors: subAnchorsByClusterAndName[c.id] || {},
+    }));
+
+    res.json({
+      category: cat.rows[0],
+      taxo: { categories },
+    });
+  } catch (e) {
+    console.error("[categories] taxo:", e.message);
     res.status(500).json({ error: e.message });
   }
 });
