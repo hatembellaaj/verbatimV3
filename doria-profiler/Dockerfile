@@ -30,9 +30,11 @@ RUN printf '%s\n' \
     '    resolver 127.0.0.11 valid=10s ipv6=off;' \
     '' \
     '    # Service embeddings local (Solon FR) — doit être AVANT location /api/' \
+    '    # Avec variable on perd le strip auto du préfixe : on le fait explicitement.' \
     '    location /api/embed/ {' \
+    '        rewrite ^/api/embed/(.*)$ /$1 break;' \
     '        set $embed_upstream http://embed:8000;' \
-    '        proxy_pass $embed_upstream/;' \
+    '        proxy_pass $embed_upstream;' \
     '        proxy_http_version 1.1;' \
     '        proxy_set_header Host $host;' \
     '        proxy_read_timeout 180s;' \
