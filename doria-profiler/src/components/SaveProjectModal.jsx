@@ -54,6 +54,11 @@ export default function SaveProjectModal({
     const categoryName = newCategoryName.trim()
       || categories.find((c) => String(c.id) === selectedCategoryId)?.name
       || null;
+    // Catégorie OBLIGATOIRE pour garantir l'héritage des ancres
+    if (!categoryName) {
+      setError("Choisis une catégorie (existante ou nouvelle). Les ancres seront alors mutualisées.");
+      return;
+    }
 
     setSaving(true);
     try {
@@ -63,9 +68,15 @@ export default function SaveProjectModal({
         contexte, mode, taxo,
         enriched, stats,
       });
-      logInfo(`[save] Sauvegarde "${name}" (${payload.verbatims.length} verbatims)…`);
+      // Compte total d'ancres pour log
+      const totalAnchors = (taxo?.categories || []).reduce(
+        (s, c) => s + (c.anchors?.length || 0)
+                    + Object.values(c.subAnchors || {}).reduce((ss, a) => ss + a.length, 0),
+        0,
+      );
+      logInfo(`[save] Sauvegarde "${name}" → catégorie "${categoryName}" (${payload.verbatims.length} verbatims, ${totalAnchors} ancres mutualisées)…`);
       const result = await createProject(payload);
-      logOk(`[save] Projet sauvegardé · id=${result.id}`);
+      logOk(`[save] Projet #${result.id} sauvegardé · ancres ajoutées au pool de la catégorie "${categoryName}" (dédup auto par texte)`);
       if (onSaved) onSaved(result);
       onClose();
     } catch (e) {
@@ -126,7 +137,7 @@ export default function SaveProjectModal({
 
           <div>
             <label style={{ fontSize: 11, color: MUTED, display: "block", marginBottom: 4 }}>
-              Catégorie existante <span style={{ color: TEAL }}>(facultatif)</span>
+              Catégorie existante <span style={{ color: "#FCA5A5" }}>(obligatoire — pour mutualiser les ancres)</span>
             </label>
             <select
               value={selectedCategoryId}
@@ -163,6 +174,7 @@ export default function SaveProjectModal({
             <div style={{ color: TEXT, marginBottom: 4 }}>À enregistrer :</div>
             <div>· {(enriched || []).length} verbatims classés</div>
             <div>· {(taxo?.categories || []).length} clusters dans la taxo (snapshot)</div>
+            <div>· {(taxo?.categories || []).reduce((s, c) => s + (c.anchors?.length || 0) + Object.values(c.subAnchors || {}).reduce((ss, a) => ss + a.length, 0), 0)} <b style={{ color: TEAL }}>ancres mutualisées au niveau de la catégorie</b></div>
             <div>· mode : <code>{mode || "—"}</code></div>
           </div>
 

@@ -13,15 +13,63 @@ router.get("/", async (_req, res) => {
   try {
     const { rows } = await pool.query(`
       SELECT
-        c.id, c.name, c.description, c.created_at,
+        c.id, c.name, c.description, c.created_at, c.updated_at,
         (SELECT COUNT(*) FROM clusters WHERE category_id = c.id)::INT AS clusters_count,
-        (SELECT COUNT(*) FROM projects WHERE category_id = c.id)::INT AS projects_count
+        (SELECT COUNT(*) FROM subclusters s
+            JOIN clusters cl ON cl.id = s.cluster_id WHERE cl.category_id = c.id)::INT AS subclusters_count,
+        (SELECT COUNT(*) FROM projects WHERE category_id = c.id)::INT AS projects_count,
+        (SELECT COUNT(*) FROM anchors a
+            LEFT JOIN clusters cl ON cl.id = a.cluster_id
+            LEFT JOIN subclusters s ON s.id = a.subcluster_id
+            LEFT JOIN clusters cls ON cls.id = s.cluster_id
+            WHERE cl.category_id = c.id OR cls.category_id = c.id)::INT AS anchors_count
       FROM categories c
       ORDER BY c.name
     `);
     res.json({ categories: rows });
   } catch (e) {
     console.error("[categories] list:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// PATCH /api/categories/:id  → renommer / mettre à jour la description
+router.patch("/:id", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { name, description } = req.body || {};
+    if (!name || !String(name).trim()) {
+      return res.status(400).json({ error: "name requis" });
+    }
+    const r = await pool.query(`
+      UPDATE categories
+      SET name = $1, description = $2, updated_at = NOW()
+      WHERE id = $3
+      RETURNING *
+    `, [String(name).trim(), description || null, id]);
+    if (!r.rowCount) return res.status(404).json({ error: "Catégorie introuvable" });
+    res.json(r.rows[0]);
+  } catch (e) {
+    if (e.code === "23505") return res.status(409).json({ error: "Une autre catégorie porte déjà ce nom" });
+    console.error("[categories] patch:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/categories/:id/projects  → liste les projets de cette catégorie
+router.get("/:id/projects", async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const { rows } = await pool.query(`
+      SELECT p.id, p.name, p.status, p.mode, p.created_at, p.updated_at,
+             (SELECT COUNT(*) FROM verbatims WHERE project_id = p.id)::INT AS verbatims_count
+      FROM projects p
+      WHERE p.category_id = $1
+      ORDER BY p.updated_at DESC
+    `, [id]);
+    res.json({ projects: rows });
+  } catch (e) {
+    console.error("[categories] projects:", e.message);
     res.status(500).json({ error: e.message });
   }
 });

@@ -11,6 +11,8 @@ import PhaseClassify from "./components/PhaseClassify.jsx";
 import PhaseResults from "./components/PhaseResults.jsx";
 import SaveProjectModal from "./components/SaveProjectModal.jsx";
 import ProjectsListModal from "./components/ProjectsListModal.jsx";
+import CategoriesManagerModal from "./components/CategoriesManagerModal.jsx";
+import { getProject } from "./api/projects.js";
 import { save, load, clearAll } from "./lib/storage.js";
 import { MOCK_AI } from "./api/claude.js";
 import {
@@ -46,6 +48,17 @@ export default function App() {
   const [saveOpen, setSaveOpen] = useState(false);
   const [savedId, setSavedId] = useState(null);
   const [projectsOpen, setProjectsOpen] = useState(false);
+  const [categoriesOpen, setCategoriesOpen] = useState(false);
+
+  // Ouvre un projet depuis son ID (utilisé par les modals)
+  async function openProjectById(id) {
+    try {
+      const project = await getProject(id);
+      loadProjectFromDb(project);
+    } catch (e) {
+      alert(`Impossible d'ouvrir le projet : ${e.message}`);
+    }
+  }
 
   // ─── Hydratation d'un projet venant de la DB → reconstruit l'état runtime ───
   function loadProjectFromDb(project) {
@@ -165,6 +178,14 @@ export default function App() {
               ✓ id {savedId}
             </span>
           )}
+          {/* Gestion des catégories */}
+          <button
+            onClick={() => setCategoriesOpen(true)}
+            style={{ ...buttonSecondary, padding: "6px 12px", fontSize: 11 }}
+            title="Gérer les catégories : créer, renommer, supprimer, voir les projets associés"
+          >
+            🗂️ Catégories
+          </button>
           {/* Liste des projets DB */}
           <button
             onClick={() => setProjectsOpen(true)}
@@ -206,6 +227,11 @@ export default function App() {
         open={projectsOpen}
         onClose={() => setProjectsOpen(false)}
         onOpen={loadProjectFromDb}
+      />
+      <CategoriesManagerModal
+        open={categoriesOpen}
+        onClose={() => setCategoriesOpen(false)}
+        onOpenProject={openProjectById}
       />
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
