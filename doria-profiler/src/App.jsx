@@ -13,6 +13,7 @@ import PhaseResults from "./components/PhaseResults.jsx";
 import SaveProjectModal from "./components/SaveProjectModal.jsx";
 import ProjectsListModal from "./components/ProjectsListModal.jsx";
 import CategoriesManagerModal from "./components/CategoriesManagerModal.jsx";
+import NewProjectDialog from "./components/NewProjectDialog.jsx";
 import { getProject } from "./api/projects.js";
 import { save, load, clearAll } from "./lib/storage.js";
 import { MOCK_AI } from "./api/claude.js";
@@ -50,6 +51,11 @@ export default function App() {
   const [savedId, setSavedId] = useState(null);
   const [projectsOpen, setProjectsOpen] = useState(false);
   const [categoriesOpen, setCategoriesOpen] = useState(false);
+  const [newProjectOpen, setNewProjectOpen] = useState(false);
+
+  // Métadonnées du projet en cours — fixées au démarrage (NewProjectDialog) ou au chargement DB
+  const [projectName, setProjectName] = useState("");
+  const [projectCategoryName, setProjectCategoryName] = useState("");
 
   // Ouvre un projet depuis son ID (utilisé par les modals)
   async function openProjectById(id) {
@@ -108,6 +114,8 @@ export default function App() {
     setContexte(project.contexte || "");
     setMode(project.mode || "embed");
     setSavedId(project.id);
+    setProjectName(project.name || "");
+    setProjectCategoryName(project.category_name || "");
     // Sauter directement à la phase Résultats si la classification est faite
     setPhase(enrichedItems.length > 0 ? "results" : "discover");
   }
@@ -125,6 +133,8 @@ export default function App() {
       setTaxo(saved.taxo || null);
       setPsycho(saved.psycho || null);
       setContexte(saved.contexte || "");
+      setProjectName(saved.projectName || "");
+      setProjectCategoryName(saved.projectCategoryName || "");
     }
     setHydrated(true);
   }, []);
@@ -132,8 +142,8 @@ export default function App() {
   // Persistance à chaque changement
   useEffect(() => {
     if (!hydrated) return;
-    save("session", { phase, mode, items, enriched, taxo, psycho, contexte });
-  }, [hydrated, phase, mode, items, enriched, taxo, psycho, contexte]);
+    save("session", { phase, mode, items, enriched, taxo, psycho, contexte, projectName, projectCategoryName });
+  }, [hydrated, phase, mode, items, enriched, taxo, psycho, contexte, projectName, projectCategoryName]);
 
   function reset() {
     // Quand on est déjà à l'accueil, pas besoin de confirmer
@@ -150,6 +160,8 @@ export default function App() {
     setPsycho(null);
     setContexte("");
     setSavedId(null);
+    setProjectName("");
+    setProjectCategoryName("");
   }
 
   const PHASES = mode === "embed" ? PHASES_EMBED : PHASES_LLM;
@@ -234,6 +246,26 @@ export default function App() {
         contexte={contexte}
         mode={mode}
         stats={null}
+        defaultName={projectName}
+        defaultCategoryName={projectCategoryName}
+      />
+      <NewProjectDialog
+        open={newProjectOpen}
+        onClose={() => setNewProjectOpen(false)}
+        onStart={({ name, categoryName }) => {
+          // Clean reset puis on attaque le flux import avec name/category déjà fixés
+          clearAll();
+          setItems([]);
+          setEnriched([]);
+          setTaxo(null);
+          setPsycho(null);
+          setContexte("");
+          setSavedId(null);
+          setMode("llm");
+          setProjectName(name);
+          setProjectCategoryName(categoryName);
+          setPhase("import");
+        }}
       />
       <ProjectsListModal
         open={projectsOpen}
@@ -246,21 +278,38 @@ export default function App() {
         onOpenProject={openProjectById}
       />
 
+      {phase !== "home" && (projectName || projectCategoryName) && (
+        <div style={{
+          background: PANEL, borderBottom: `1px solid ${BORDER}`,
+          padding: "8px 24px", fontSize: 12, color: MUTED,
+          display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap",
+        }}>
+          <span>
+            <span style={{ color: MUTED }}>Projet : </span>
+            <span style={{ color: TEXT, fontWeight: 600 }}>{projectName || "(sans nom)"}</span>
+          </span>
+          {projectCategoryName && (
+            <>
+              <span style={{ color: BORDER }}>·</span>
+              <span>
+                <span style={{ color: MUTED }}>Catégorie : </span>
+                <span style={{ color: TEAL, fontWeight: 600 }}>📚 {projectCategoryName}</span>
+              </span>
+            </>
+          )}
+          {savedId && (
+            <>
+              <span style={{ color: BORDER }}>·</span>
+              <span style={{ color: POS }}>✓ enregistré (id {savedId})</span>
+            </>
+          )}
+        </div>
+      )}
+
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
         {phase === "home" && (
           <PhaseHome
-            onNewProject={() => {
-              // Reset le state runtime sans confirmation (l'utilisateur démarre frais)
-              clearAll();
-              setItems([]);
-              setEnriched([]);
-              setTaxo(null);
-              setPsycho(null);
-              setContexte("");
-              setSavedId(null);
-              setMode("llm");
-              setPhase("import");
-            }}
+            onNewProject={() => setNewProjectOpen(true)}
             onLoadProject={(project) => loadProjectFromDb(project)}
             onOpenCategories={() => setCategoriesOpen(true)}
           />

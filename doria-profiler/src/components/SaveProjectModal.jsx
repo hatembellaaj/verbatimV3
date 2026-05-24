@@ -15,6 +15,8 @@ export default function SaveProjectModal({
   open, onClose, onSaved,
   // état runtime à persister
   taxo, enriched, contexte, mode, stats,
+  // valeurs pré-remplies depuis NewProjectDialog (verrouillées si présentes)
+  defaultName, defaultCategoryName,
 }) {
   const [name, setName] = useState("");
   const [categories, setCategories] = useState([]);
@@ -24,11 +26,16 @@ export default function SaveProjectModal({
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState(null);
 
+  // Si les valeurs viennent du dialogue de création, on les verrouille
+  const lockedFromCreation = !!(defaultName && defaultCategoryName);
+
   useEffect(() => {
     if (!open) return;
     setError(null);
-    // Défaut : nom basé sur la date
-    if (!name) {
+    // Préfère le nom passé en props, sinon défaut horodaté
+    if (defaultName) {
+      setName(defaultName);
+    } else if (!name) {
       const ts = new Date().toISOString().slice(0, 16).replace("T", " ");
       setName(`Projet ${ts}`);
     }
@@ -40,9 +47,21 @@ export default function SaveProjectModal({
         try {
           const r = await listCategories();
           setCategories(r?.categories || []);
+          // Pré-sélection de la catégorie passée en props
+          if (defaultCategoryName) {
+            const match = (r?.categories || []).find((c) => c.name === defaultCategoryName);
+            if (match) {
+              setSelectedCategoryId(String(match.id));
+            } else {
+              // Catégorie pas encore en DB → on la met en "nouvelle"
+              setNewCategoryName(defaultCategoryName);
+            }
+          }
         } catch (e) {
           logErr(`[save] Catégories : ${e.message}`);
         }
+      } else if (defaultCategoryName) {
+        setNewCategoryName(defaultCategoryName);
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -124,26 +143,27 @@ export default function SaveProjectModal({
         <div style={{ display: "grid", gap: 12 }}>
           <div>
             <label style={{ fontSize: 11, color: MUTED, display: "block", marginBottom: 4 }}>
-              Nom du projet
+              Nom du projet {lockedFromCreation && <span style={{ color: TEAL }}>(défini à la création)</span>}
             </label>
             <input
               value={name}
               onChange={(e) => setName(e.target.value)}
-              style={inputStyle}
+              style={{ ...inputStyle, opacity: lockedFromCreation ? 0.6 : 1 }}
               placeholder="Ex : Parc Astérix — Été 2023"
-              autoFocus
+              autoFocus={!lockedFromCreation}
+              disabled={lockedFromCreation}
             />
           </div>
 
           <div>
             <label style={{ fontSize: 11, color: MUTED, display: "block", marginBottom: 4 }}>
-              Catégorie existante <span style={{ color: "#FCA5A5" }}>(obligatoire — pour mutualiser les ancres)</span>
+              Catégorie {lockedFromCreation && <span style={{ color: TEAL }}>(définie à la création)</span>}
             </label>
             <select
               value={selectedCategoryId}
               onChange={(e) => { setSelectedCategoryId(e.target.value); if (e.target.value) setNewCategoryName(""); }}
-              style={{ ...inputStyle, cursor: "pointer" }}
-              disabled={!!newCategoryName}
+              style={{ ...inputStyle, cursor: "pointer", opacity: lockedFromCreation ? 0.6 : 1 }}
+              disabled={lockedFromCreation || !!newCategoryName}
             >
               <option value="">— aucune —</option>
               {categories.map((c) => (
@@ -154,18 +174,25 @@ export default function SaveProjectModal({
             </select>
           </div>
 
-          <div>
-            <label style={{ fontSize: 11, color: MUTED, display: "block", marginBottom: 4 }}>
-              … ou nouvelle catégorie
-            </label>
-            <input
-              value={newCategoryName}
-              onChange={(e) => { setNewCategoryName(e.target.value); if (e.target.value) setSelectedCategoryId(""); }}
-              style={inputStyle}
-              placeholder="Ex : Parc d'attractions"
-              disabled={!!selectedCategoryId}
-            />
-          </div>
+          {!lockedFromCreation && (
+            <div>
+              <label style={{ fontSize: 11, color: MUTED, display: "block", marginBottom: 4 }}>
+                … ou nouvelle catégorie
+              </label>
+              <input
+                value={newCategoryName}
+                onChange={(e) => { setNewCategoryName(e.target.value); if (e.target.value) setSelectedCategoryId(""); }}
+                style={inputStyle}
+                placeholder="Ex : Parc d'attractions"
+                disabled={!!selectedCategoryId}
+              />
+            </div>
+          )}
+          {lockedFromCreation && newCategoryName && !selectedCategoryId && (
+            <div style={{ fontSize: 11, color: MUTED, marginTop: -4 }}>
+              Nouvelle catégorie : <b style={{ color: TEAL }}>📚 {newCategoryName}</b>
+            </div>
+          )}
 
           <div style={{
             fontSize: 11, color: MUTED, background: PANEL_2, padding: 10,
