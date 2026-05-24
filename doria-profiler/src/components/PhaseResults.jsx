@@ -22,9 +22,52 @@ const TABS = [
   { id: "items", label: "Items bruts" },
 ];
 
-export default function PhaseResults({ items, taxo, psycho, contexte, mode, onBack, onReset }) {
+export default function PhaseResults({
+  items, taxo, psycho, contexte, mode, onBack, onReset,
+  // Callbacks pour la boucle de correction (étape 3)
+  onItemsChange, onSubmitCorrections, onRelaunch, savedProjectId,
+}) {
   const [tab, setTab] = useState("categories");
   const [drillItem, setDrillItem] = useState(null);
+  const [submitting, setSubmitting] = useState(false);
+
+  // Nombre de verbatims corrigés en attente de persistance
+  const correctedCount = items.filter((i) => i._corrected).length;
+
+  // Update local — propage au parent (App.jsx setEnriched)
+  function updateItem(updated) {
+    const next = items.map((it) => (it.id === updated.id ? updated : it));
+    if (onItemsChange) onItemsChange(next);
+    // Mettre à jour le drillItem affiché
+    setDrillItem(updated);
+  }
+
+  async function handleSubmitCorrections() {
+    if (correctedCount === 0) return;
+    if (!savedProjectId) {
+      alert("Sauvegarde d'abord le projet en base (bouton 💾 dans le header) avant d'enregistrer les corrections.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      await onSubmitCorrections();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+  async function handleRelaunch() {
+    if (!savedProjectId) {
+      alert("Sauvegarde d'abord le projet en base avant de relancer la classification avec corrections.");
+      return;
+    }
+    if (correctedCount > 0 && !confirm(`Tu as ${correctedCount} correction(s) non sauvegardée(s).\nLes sauvegarder + relancer la classification ?`)) return;
+    setSubmitting(true);
+    try {
+      await onRelaunch();
+    } finally {
+      setSubmitting(false);
+    }
+  }
 
   // Stats agrégées (utilisés par tous les onglets ET le chat)
   const stats = useMemo(() => buildStats(items, taxo, psycho), [items, taxo, psycho]);
@@ -90,6 +133,38 @@ export default function PhaseResults({ items, taxo, psycho, contexte, mode, onBa
 
       <ContextChat stats={stats} taxo={taxo} psycho={psycho} />
 
+      {correctedCount > 0 && (
+        <div style={{
+          ...panelStyle, borderColor: TEAL, background: "rgba(34,211,238,0.06)",
+          display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap",
+        }}>
+          <div style={{ fontSize: 13, color: TEXT }}>
+            ✎ <b style={{ color: TEAL }}>{correctedCount}</b> correction{correctedCount > 1 ? "s" : ""} en attente
+            <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
+              Chaque correction génèrera un ancre (source : <code>correction</code>) ajouté au pool de la catégorie.
+            </div>
+          </div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleSubmitCorrections}
+              disabled={submitting || !savedProjectId}
+              title={!savedProjectId ? "Sauvegarde d'abord le projet en base (header 💾)" : ""}
+              style={{ ...buttonSecondary, padding: "8px 14px", fontSize: 12, opacity: submitting || !savedProjectId ? 0.5 : 1 }}
+            >
+              {submitting ? "…" : "💾 Sauvegarder les corrections"}
+            </button>
+            <button
+              onClick={handleRelaunch}
+              disabled={submitting || !savedProjectId}
+              title={!savedProjectId ? "Sauvegarde d'abord le projet en base" : ""}
+              style={{ ...buttonPrimary, padding: "8px 14px", fontSize: 12, opacity: submitting || !savedProjectId ? 0.5 : 1 }}
+            >
+              {submitting ? "…" : "🔄 Reclasser avec corrections"}
+            </button>
+          </div>
+        </div>
+      )}
+
       <div style={{ display: "flex", justifyContent: "space-between", gap: 8 }}>
         <button onClick={onBack} style={buttonSecondary}>← Retour à l'analyse</button>
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
@@ -98,7 +173,14 @@ export default function PhaseResults({ items, taxo, psycho, contexte, mode, onBa
         </div>
       </div>
 
-      {drillItem && <DrillPanel item={drillItem} onClose={() => setDrillItem(null)} />}
+      {drillItem && (
+        <DrillPanel
+          item={drillItem}
+          onClose={() => setDrillItem(null)}
+          onCorrect={updateItem}
+          taxo={taxo}
+        />
+      )}
     </div>
   );
 }
@@ -468,9 +550,62 @@ function TabItems({ items, onDrill }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Drill-down panel
+// Drill-down panel — affiche le détail et permet de CORRIGER la classification.
+// Mode édition : changer cluster + sous-cluster pour chaque label, en ajouter,
+// en supprimer. À l'enregistrement, l'item parent est mis à jour (callback)
+// avec un flag _corrected: true. La sauvegarde DB se fait depuis Results.
 // ─────────────────────────────────────────────────────────────────────────────
-function DrillPanel({ item, onClose }) {
+function DrillPanel({ item, onClose, onCorrect, taxo }) {
+  const [editing, setEditing] = useState(false);
+  // Working copy of categories during edit
+  const [draftCats, setDraftCats] = useState([]);
+
+  function startEdit() {
+    const seed = Array.isArray(item.categories) && item.categories.length
+      ? item.categories.map((c) => ({
+          cluster_label: c.cluster_label || "",
+          subcluster_label: c.subcluster_label || "",
+        }))
+      : [{ cluster_label: item.category || "", subcluster_label: item.subCategory || "" }];
+    setDraftCats(seed);
+    setEditing(true);
+  }
+
+  function updateDraft(idx, key, value) {
+    setDraftCats((d) => {
+      const next = d.map((x, i) => i === idx ? { ...x, [key]: value } : x);
+      // Si on change le cluster, on reset le sous-cluster pour éviter incohérence
+      if (key === "cluster_label") next[idx].subcluster_label = "";
+      return next;
+    });
+  }
+  function addDraft() {
+    setDraftCats((d) => [...d, { cluster_label: "", subcluster_label: "" }]);
+  }
+  function removeDraft(idx) {
+    setDraftCats((d) => d.filter((_, i) => i !== idx));
+  }
+
+  function saveCorrection() {
+    const cleaned = draftCats
+      .filter((c) => c.cluster_label && c.cluster_label.trim())
+      .map((c) => ({
+        cluster_label: c.cluster_label.trim(),
+        subcluster_label: c.subcluster_label?.trim() || null,
+        confidence_cluster: 1.0,    // marqueur de correction humaine
+        confidence_subcluster: 1.0,
+        scores: null,
+      }));
+    if (!cleaned.length) {
+      if (!confirm("Vider toutes les catégories de ce verbatim ?")) return;
+    }
+    onCorrect({ ...item, categories: cleaned, _corrected: true });
+    setEditing(false);
+  }
+
+  const clusters = taxo?.categories || [];
+  const clusterNames = clusters.map((c) => c.name);
+
   return (
     <div
       onClick={onClose}
@@ -483,49 +618,125 @@ function DrillPanel({ item, onClose }) {
         onClick={(e) => e.stopPropagation()}
         style={{
           background: PANEL, border: `1px solid ${BORDER}`, borderRadius: 12, padding: 20,
-          maxWidth: 600, width: "100%", maxHeight: "85vh", overflowY: "auto",
+          maxWidth: 640, width: "100%", maxHeight: "85vh", overflowY: "auto",
         }}
       >
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "start", marginBottom: 12 }}>
-          <h3 style={{ margin: 0, color: GOLD, fontSize: 15 }}>Détail du verbatim #{item.id}</h3>
+          <h3 style={{ margin: 0, color: GOLD, fontSize: 15 }}>
+            Détail du verbatim #{item.id}
+            {item._corrected && (
+              <span style={{ marginLeft: 10, fontSize: 10, color: TEAL, padding: "2px 8px", background: "rgba(34,211,238,0.15)", border: `1px solid ${TEAL}`, borderRadius: 12 }}>
+                ✓ corrigé
+              </span>
+            )}
+          </h3>
           <button onClick={onClose} style={{ background: "transparent", border: "none", color: MUTED, cursor: "pointer", fontSize: 20 }}>×</button>
         </div>
         <div style={{ background: PANEL_2, border: `1px solid ${BORDER}`, borderRadius: 8, padding: 12, color: TEXT, fontSize: 13, lineHeight: 1.5, marginBottom: 16 }}>
           "{item.verbatim}"
         </div>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
-          <Field label="Catégorie principale" value={item.category} />
-          <Field label="Sous-catégorie" value={item.subCategory} />
-          <Field label="Tonalité" value={item.tonality} color={item.tonality === "positif" ? POS : item.tonality === "négatif" ? NEG : NEUTRAL} />
-          <Field label="Confiance" value={(item.confidence ?? 0).toFixed(2)} />
-          <Field label="Profil psy." value={item.psychoProfile} color={ACCENT} />
-          <Field label="Note" value={item.note ?? "—"} />
-          <Field label="Date" value={item.date ?? "—"} />
-          <Field label="Source" value={item.source ?? "—"} />
-        </div>
-        {Array.isArray(item.categories) && item.categories.length > 1 && (
-          <div style={{ marginTop: 12 }}>
-            <div style={{ fontSize: 11, color: MUTED, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
-              Catégories multiples ({item.categories.length})
+
+        {!editing && (
+          <>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
+              <Field label="Catégorie principale" value={item.category} />
+              <Field label="Sous-catégorie" value={item.subCategory} />
+              <Field label="Tonalité" value={item.tonality} color={item.tonality === "positif" ? POS : item.tonality === "négatif" ? NEG : NEUTRAL} />
+              <Field label="Confiance" value={(item.confidence ?? 0).toFixed(2)} />
+              <Field label="Profil psy." value={item.psychoProfile} color={ACCENT} />
+              <Field label="Note" value={item.note ?? "—"} />
+              <Field label="Date" value={item.date ?? "—"} />
+              <Field label="Source" value={item.source ?? "—"} />
             </div>
-            <div style={{ display: "grid", gap: 6 }}>
-              {item.categories.map((c, idx) => (
-                <div key={idx} style={{
-                  display: "flex", justifyContent: "space-between", alignItems: "center",
-                  fontSize: 12, color: TEXT, padding: "6px 10px", background: PANEL_2,
-                  border: `1px solid ${BORDER}`, borderRadius: 8,
-                }}>
-                  <span>
-                    <span style={{ color: idx === 0 ? GOLD : TEAL, fontWeight: 600 }}>
-                      {c.cluster_label}
-                    </span>
-                    {c.subcluster_label && <span style={{ color: MUTED }}> › {c.subcluster_label}</span>}
-                  </span>
-                  <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: MUTED }}>
-                    cluster {c.confidence_cluster?.toFixed(2)} · sub {c.confidence_subcluster?.toFixed(2)}
-                  </span>
+            {Array.isArray(item.categories) && item.categories.length > 0 && (
+              <div style={{ marginTop: 12 }}>
+                <div style={{ fontSize: 11, color: MUTED, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>
+                  Catégories ({item.categories.length})
                 </div>
-              ))}
+                <div style={{ display: "grid", gap: 6 }}>
+                  {item.categories.map((c, idx) => (
+                    <div key={idx} style={{
+                      display: "flex", justifyContent: "space-between", alignItems: "center",
+                      fontSize: 12, color: TEXT, padding: "6px 10px", background: PANEL_2,
+                      border: `1px solid ${BORDER}`, borderRadius: 8,
+                    }}>
+                      <span>
+                        <span style={{ color: idx === 0 ? GOLD : TEAL, fontWeight: 600 }}>
+                          {c.cluster_label}
+                        </span>
+                        {c.subcluster_label && <span style={{ color: MUTED }}> › {c.subcluster_label}</span>}
+                      </span>
+                      <span style={{ fontFamily: "ui-monospace, monospace", fontSize: 11, color: MUTED }}>
+                        cluster {c.confidence_cluster?.toFixed(2)} · sub {c.confidence_subcluster?.toFixed(2)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+            {/* Bouton corriger */}
+            {onCorrect && clusterNames.length > 0 && (
+              <div style={{ marginTop: 14 }}>
+                <button
+                  onClick={startEdit}
+                  style={{ ...buttonSecondary, padding: "6px 14px", fontSize: 12 }}
+                >
+                  ✎ Corriger la classification
+                </button>
+              </div>
+            )}
+          </>
+        )}
+
+        {editing && (
+          <div>
+            <div style={{ fontSize: 11, color: TEAL, marginBottom: 8, fontWeight: 600 }}>
+              Mode correction — ajuste les catégories puis enregistre
+            </div>
+            <div style={{ display: "grid", gap: 8 }}>
+              {draftCats.map((c, idx) => {
+                const cluster = clusters.find((x) => x.name === c.cluster_label);
+                const subs = cluster?.subCategories || [];
+                return (
+                  <div key={idx} style={{
+                    background: PANEL_2, border: `1px solid ${BORDER}`, borderRadius: 8,
+                    padding: 10, display: "grid", gap: 6,
+                  }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr auto", gap: 6 }}>
+                      <select
+                        value={c.cluster_label}
+                        onChange={(e) => updateDraft(idx, "cluster_label", e.target.value)}
+                        style={{ ...inputStyle, fontSize: 12 }}
+                      >
+                        <option value="">— cluster —</option>
+                        {clusterNames.map((n) => <option key={n} value={n}>{n}</option>)}
+                      </select>
+                      <select
+                        value={c.subcluster_label}
+                        onChange={(e) => updateDraft(idx, "subcluster_label", e.target.value)}
+                        disabled={!c.cluster_label || subs.length === 0}
+                        style={{ ...inputStyle, fontSize: 12 }}
+                      >
+                        <option value="">— sous-cluster —</option>
+                        {subs.map((s) => <option key={s} value={s}>{s}</option>)}
+                      </select>
+                      <button
+                        onClick={() => removeDraft(idx)}
+                        style={{ ...buttonSecondary, padding: "2px 10px", color: "#FCA5A5", borderColor: "#EF4444" }}
+                      >
+                        ✕
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+              <button onClick={addDraft} style={{ ...buttonSecondary, padding: "6px 12px", fontSize: 11, alignSelf: "flex-start" }}>
+                + Ajouter une catégorie
+              </button>
+            </div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end", marginTop: 14 }}>
+              <button onClick={() => setEditing(false)} style={buttonSecondary}>Annuler</button>
+              <button onClick={saveCorrection} style={buttonPrimary}>Enregistrer la correction</button>
             </div>
           </div>
         )}

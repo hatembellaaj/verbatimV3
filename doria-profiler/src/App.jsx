@@ -14,7 +14,8 @@ import SaveProjectModal from "./components/SaveProjectModal.jsx";
 import ProjectsListModal from "./components/ProjectsListModal.jsx";
 import CategoriesManagerModal from "./components/CategoriesManagerModal.jsx";
 import NewProjectDialog from "./components/NewProjectDialog.jsx";
-import { getProject } from "./api/projects.js";
+import { getProject, submitCorrections, getCategoryTaxo, listCategories } from "./api/projects.js";
+import { logInfo, logOk, logErr, logWarn } from "./lib/logger.js";
 import { save, load, clearAll } from "./lib/storage.js";
 import { MOCK_AI } from "./api/claude.js";
 import {
@@ -64,6 +65,85 @@ export default function App() {
       loadProjectFromDb(project);
     } catch (e) {
       alert(`Impossible d'ouvrir le projet : ${e.message}`);
+    }
+  }
+
+  // ─── Envoi des corrections au backend ──────────────────────────────────
+  async function handleSubmitCorrections() {
+    if (!savedId) {
+      alert("Le projet doit être sauvegardé en base avant d'envoyer les corrections.");
+      return;
+    }
+    const corrected = enriched.filter((i) => i._corrected);
+    if (corrected.length === 0) {
+      logWarn("[corrections] Aucune correction à envoyer");
+      return;
+    }
+    const payload = {
+      corrections: corrected.map((i) => ({
+        external_id: i.id != null ? String(i.id) : null,
+        verbatim_id: i._dbId || null,
+        verbatim_text: i.verbatim || "",
+        labels: (i.categories || []).map((c) => ({
+          cluster_label: c.cluster_label,
+          subcluster_label: c.subcluster_label || null,
+        })),
+      })),
+    };
+    logInfo(`[corrections] Envoi de ${corrected.length} correction(s) au projet #${savedId}…`);
+    try {
+      const r = await submitCorrections(savedId, payload);
+      logOk(`[corrections] ✓ ${r.updatedVerbatims} verbatims, ${r.createdClassifications} classifications, ${r.createdAnchors} nouvelles ancres ajoutées au pool de la catégorie`);
+      if ((r.missingLabels || []).length) {
+        logWarn(`[corrections] Labels non résolus : ${r.missingLabels.slice(0, 5).join(" · ")}`);
+      }
+      // Retire le flag _corrected pour signaler que c'est persisté
+      setEnriched((curr) => curr.map((i) => i._corrected ? { ...i, _corrected: false } : i));
+      alert(`✓ Corrections enregistrées :\n· ${r.updatedVerbatims} verbatims mis à jour\n· ${r.createdAnchors} ancres ajoutées au pool de la catégorie`);
+    } catch (e) {
+      logErr(`[corrections] ÉCHEC : ${e.message}`);
+      alert(`Échec de l'enregistrement : ${e.message}`);
+      throw e;
+    }
+  }
+
+  // ─── Relance de la classification avec ancres mises à jour ──────────────
+  async function handleRelaunchClassification() {
+    if (!savedId) {
+      alert("Sauvegarde d'abord le projet en base.");
+      return;
+    }
+    // Persiste les corrections en attente
+    const hasPending = enriched.some((i) => i._corrected);
+    if (hasPending) {
+      logInfo("[relaunch] Sauvegarde préalable des corrections…");
+      await handleSubmitCorrections();
+    }
+    // Recharge la taxo de la catégorie (avec toutes les ancres mises à jour, incl. corrections)
+    try {
+      const cats = await listCategories();
+      const cat = (cats?.categories || []).find((c) => c.name === projectCategoryName);
+      if (!cat) throw new Error(`Catégorie "${projectCategoryName}" introuvable en DB`);
+      const r = await getCategoryTaxo(cat.id);
+      const refreshedTaxo = {
+        ...r.taxo,
+        anchorsVersion: `db-${cat.id}-${Date.now()}`,
+        _categoryId: cat.id,
+        _categoryName: cat.name,
+      };
+      setTaxo(refreshedTaxo);
+      const totalAnchors = refreshedTaxo.categories.reduce(
+        (s, c) => s + (c.anchors?.length || 0)
+                    + Object.values(c.subAnchors || {}).reduce((ss, a) => ss + a.length, 0), 0,
+      );
+      logOk(`[relaunch] Taxo rechargée depuis catégorie #${cat.id} (${totalAnchors} ancres dont les nouvelles corrections)`);
+      // Vide les résultats précédents pour forcer une nouvelle classification
+      setEnriched([]);
+      setMode("embed");
+      setPhase("classify");
+    } catch (e) {
+      logErr(`[relaunch] ÉCHEC : ${e.message}`);
+      alert(`Impossible de relancer : ${e.message}`);
     }
   }
 
@@ -398,6 +478,10 @@ export default function App() {
             mode={mode}
             onBack={() => setPhase(mode === "embed" ? "classify" : "analyse")}
             onReset={reset}
+            onItemsChange={setEnriched}
+            onSubmitCorrections={handleSubmitCorrections}
+            onRelaunch={handleRelaunchClassification}
+            savedProjectId={savedId}
           />
         )}
       </main>

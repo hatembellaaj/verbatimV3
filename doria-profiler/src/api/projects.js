@@ -27,10 +27,12 @@ export const updateCategory  = (id, data) => http("PATCH", `/api/categories/${id
 export const deleteCategory  = (id)  => http("DELETE", `/api/categories/${id}`);
 
 // ─── Projets ──────────────────────────────────────────────────────────
-export const listProjects    = ()    => http("GET",    "/api/projects");
-export const getProject      = (id)  => http("GET",    `/api/projects/${id}`);
-export const createProject   = (data) => http("POST",  "/api/projects", data);
-export const deleteProject   = (id)  => http("DELETE", `/api/projects/${id}`);
+export const listProjects     = ()    => http("GET",    "/api/projects");
+export const getProject       = (id)  => http("GET",    `/api/projects/${id}`);
+export const createProject    = (data) => http("POST",  "/api/projects", data);
+export const deleteProject    = (id)  => http("DELETE", `/api/projects/${id}`);
+// Sauvegarde des corrections utilisateur (génère des ancres source='correction')
+export const submitCorrections = (id, data) => http("POST", `/api/projects/${id}/corrections`, data);
 
 // ─── Vérification de la disponibilité de la DB ────────────────────────
 export async function checkDbReady() {

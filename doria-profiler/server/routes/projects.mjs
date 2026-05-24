@@ -241,3 +241,136 @@ router.delete("/:id", async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// POST /api/projects/:id/corrections
+// Enregistre les corrections utilisateur d'un projet :
+//   1. Pour chaque verbatim corrigé :
+//      - DELETE les classifications source='user_correction' existantes
+//      - INSERT les nouvelles classifications source='user_correction'
+//   2. Pour chaque (cluster, sous-cluster) corrigé, INSERT un Anchor
+//      (text = verbatim, source='correction', project_id = celui-ci)
+//      → ces ancres enrichissent le pool de la catégorie pour les futurs runs.
+//
+// Body :
+//   { corrections: [
+//       { external_id?, verbatim_id?, verbatim_text,
+//         labels: [{ cluster_label, subcluster_label }] }
+//     ]
+//   }
+// ─────────────────────────────────────────────────────────────────────────
+router.post("/:id/corrections", async (req, res) => {
+  const projectId = Number(req.params.id);
+  const corrections = req.body?.corrections || [];
+  if (!Array.isArray(corrections) || corrections.length === 0) {
+    return res.status(400).json({ error: "Aucune correction fournie" });
+  }
+
+  try {
+    const result = await withTransaction(async (client) => {
+      // 1. Charger le projet et sa catégorie
+      const projR = await client.query(`
+        SELECT id, category_id FROM projects WHERE id = $1
+      `, [projectId]);
+      if (!projR.rowCount) throw new Error("Projet introuvable");
+      const categoryId = projR.rows[0].category_id;
+      if (!categoryId) throw new Error("Le projet n'a pas de catégorie : impossible de mutualiser les ancres");
+
+      // 2. Charger la map label → id pour clusters et sous-clusters de la catégorie
+      const cl = await client.query(`
+        SELECT id, name FROM clusters WHERE category_id = $1
+      `, [categoryId]);
+      const labelToClusterId = new Map(cl.rows.map((r) => [r.name, r.id]));
+
+      const sub = await client.query(`
+        SELECT s.id, s.name AS sub_name, c.name AS cluster_name
+        FROM subclusters s JOIN clusters c ON c.id = s.cluster_id
+        WHERE c.category_id = $1
+      `, [categoryId]);
+      const labelToSubclusterId = new Map(
+        sub.rows.map((r) => [`${r.cluster_name}::${r.sub_name}`, r.id]),
+      );
+
+      let updatedVerbatims = 0;
+      let createdAnchors = 0;
+      let createdClassifications = 0;
+      const missingLabels = [];
+
+      for (const corr of corrections) {
+        // 3. Retrouver le verbatim en DB (via verbatim_id direct OU external_id)
+        let dbVerbId = corr.verbatim_id;
+        if (!dbVerbId && corr.external_id) {
+          const v = await client.query(`
+            SELECT id FROM verbatims WHERE project_id = $1 AND external_id = $2
+          `, [projectId, String(corr.external_id)]);
+          dbVerbId = v.rows[0]?.id;
+        }
+        if (!dbVerbId) {
+          missingLabels.push(`verbatim introuvable : ${corr.external_id || "?"}`);
+          continue;
+        }
+
+        // 4. Reset les corrections existantes pour ce verbatim
+        await client.query(`
+          DELETE FROM classifications WHERE verbatim_id = $1 AND source = 'user_correction'
+        `, [dbVerbId]);
+
+        // 5. Insère les nouvelles corrections + ancres dérivées
+        for (const lbl of (corr.labels || [])) {
+          const clusterId = labelToClusterId.get(lbl.cluster_label) || null;
+          const subclusterId = labelToSubclusterId.get(`${lbl.cluster_label}::${lbl.subcluster_label}`) || null;
+
+          if (!clusterId && !subclusterId) {
+            missingLabels.push(`${lbl.cluster_label} > ${lbl.subcluster_label}`);
+            continue;
+          }
+
+          // 5a. Classification source='user_correction'
+          await client.query(`
+            INSERT INTO classifications
+              (verbatim_id, cluster_id, subcluster_id, cluster_label, subcluster_label, source)
+            VALUES ($1, $2, $3, $4, $5, 'user_correction')
+          `, [dbVerbId, clusterId, subclusterId, lbl.cluster_label, lbl.subcluster_label || null]);
+          createdClassifications++;
+
+          // 5b. Anchor dérivé (lié au sous-cluster si dispo, sinon cluster)
+          const text = String(corr.verbatim_text || "").trim().slice(0, 1000);
+          if (!text) continue;
+          if (subclusterId) {
+            const r = await client.query(`
+              INSERT INTO anchors (subcluster_id, text, source, project_id)
+              VALUES ($1, $2, 'correction', $3)
+              ON CONFLICT (subcluster_id, text) WHERE subcluster_id IS NOT NULL DO NOTHING
+              RETURNING id
+            `, [subclusterId, text, projectId]);
+            if (r.rowCount) createdAnchors++;
+          } else if (clusterId) {
+            const r = await client.query(`
+              INSERT INTO anchors (cluster_id, text, source, project_id)
+              VALUES ($1, $2, 'correction', $3)
+              ON CONFLICT (cluster_id, text) WHERE cluster_id IS NOT NULL DO NOTHING
+              RETURNING id
+            `, [clusterId, text, projectId]);
+            if (r.rowCount) createdAnchors++;
+          }
+        }
+        updatedVerbatims++;
+      }
+
+      // 6. Touch project.updated_at
+      await client.query("UPDATE projects SET updated_at = NOW() WHERE id = $1", [projectId]);
+
+      return {
+        updatedVerbatims,
+        createdClassifications,
+        createdAnchors,
+        missingLabels,
+      };
+    });
+
+    res.json(result);
+  } catch (e) {
+    console.error("[projects] corrections:", e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
