@@ -2,6 +2,7 @@
 // State machine : import → calibrate → analyse → results
 // Persistance via localStorage (tout sauf le fichier brut)
 import React, { useState, useEffect } from "react";
+import PhaseHome from "./components/PhaseHome.jsx";
 import PhaseImport from "./components/PhaseImport.jsx";
 import PhaseDiscover from "./components/PhaseDiscover.jsx";
 import PhaseCalibrate from "./components/PhaseCalibrate.jsx";
@@ -37,7 +38,7 @@ const PHASE_LABELS = {
 };
 
 export default function App() {
-  const [phase, setPhase] = useState("import");
+  const [phase, setPhase] = useState("home");
   const [mode, setMode] = useState("llm"); // 'llm' | 'embed' — choisi à la fin de Découverte
   const [items, setItems] = useState([]);          // items après mapping CSV
   const [enriched, setEnriched] = useState([]);    // items après analyse LLM
@@ -115,7 +116,9 @@ export default function App() {
   useEffect(() => {
     const saved = load("session", null);
     if (saved) {
-      setPhase(saved.phase || "import");
+      // Si on a quelque chose en cours (items ou taxo) on reprend, sinon on revient à l'accueil
+      const hasWork = (saved.items || []).length > 0 || saved.taxo;
+      setPhase(hasWork ? (saved.phase || "home") : "home");
       setMode(saved.mode || "llm");
       setItems(saved.items || []);
       setEnriched(saved.enriched || []);
@@ -133,15 +136,20 @@ export default function App() {
   }, [hydrated, phase, mode, items, enriched, taxo, psycho, contexte]);
 
   function reset() {
-    if (!confirm("Effacer toutes les données et recommencer un nouveau projet ?")) return;
+    // Quand on est déjà à l'accueil, pas besoin de confirmer
+    if (phase !== "home") {
+      const hasWork = items.length > 0 || taxo;
+      if (hasWork && !confirm("Quitter le projet en cours et retourner à l'accueil ?\n(Sauvegarde-le d'abord en base si tu veux le retrouver plus tard.)")) return;
+    }
     clearAll();
-    setPhase("import");
+    setPhase("home");
     setMode("llm");
     setItems([]);
     setEnriched([]);
     setTaxo(null);
     setPsycho(null);
     setContexte("");
+    setSavedId(null);
   }
 
   const PHASES = mode === "embed" ? PHASES_EMBED : PHASES_LLM;
@@ -158,15 +166,17 @@ export default function App() {
             <span style={{ color: MUTED, fontWeight: 400, fontSize: 11, marginLeft: 8 }}>v3.0 — Module Verbatim</span>
           </div>
         </div>
-        <PhaseStepper phases={PHASES} phase={phase} setPhase={setPhase} canJump={{
-          import: true,
-          discover: items.length > 0,
-          calibrate: items.length > 0 && !!taxo,
-          analyse: !!taxo && !!psycho,
-          anchors: items.length > 0 && !!taxo,
-          classify: items.length > 0 && !!taxo && (taxo.categories || []).some((c) => c.anchors?.length),
-          results: enriched.length > 0,
-        }} />
+        {phase !== "home" && (
+          <PhaseStepper phases={PHASES} phase={phase} setPhase={setPhase} canJump={{
+            import: true,
+            discover: items.length > 0,
+            calibrate: items.length > 0 && !!taxo,
+            analyse: !!taxo && !!psycho,
+            anchors: items.length > 0 && !!taxo,
+            classify: items.length > 0 && !!taxo && (taxo.categories || []).some((c) => c.anchors?.length),
+            results: enriched.length > 0,
+          }} />
+        )}
         <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
           {MOCK_AI && (
             <span style={{ fontSize: 10, color: ACCENT, padding: "4px 8px", background: "rgba(168,85,247,0.1)", border: `1px solid ${ACCENT}`, borderRadius: 12 }}>
@@ -209,7 +219,9 @@ export default function App() {
           >
             💾 Sauvegarder
           </button>
-          <button onClick={reset} style={{ ...buttonSecondary, padding: "6px 12px", fontSize: 11 }}>Nouveau</button>
+          <button onClick={reset} style={{ ...buttonSecondary, padding: "6px 12px", fontSize: 11 }}>
+            🏠 Accueil
+          </button>
         </div>
       </header>
 
@@ -235,6 +247,24 @@ export default function App() {
       />
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
+        {phase === "home" && (
+          <PhaseHome
+            onNewProject={() => {
+              // Reset le state runtime sans confirmation (l'utilisateur démarre frais)
+              clearAll();
+              setItems([]);
+              setEnriched([]);
+              setTaxo(null);
+              setPsycho(null);
+              setContexte("");
+              setSavedId(null);
+              setMode("llm");
+              setPhase("import");
+            }}
+            onLoadProject={(project) => loadProjectFromDb(project)}
+            onOpenCategories={() => setCategoriesOpen(true)}
+          />
+        )}
         {phase === "import" && (
           <PhaseImport
             onValidate={({ items, contexte, mapping, stats }) => {
