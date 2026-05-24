@@ -10,6 +10,7 @@ import PhaseAnchors from "./components/PhaseAnchors.jsx";
 import PhaseClassify from "./components/PhaseClassify.jsx";
 import PhaseResults from "./components/PhaseResults.jsx";
 import SaveProjectModal from "./components/SaveProjectModal.jsx";
+import ProjectsListModal from "./components/ProjectsListModal.jsx";
 import { save, load, clearAll } from "./lib/storage.js";
 import { MOCK_AI } from "./api/claude.js";
 import {
@@ -44,6 +45,58 @@ export default function App() {
   const [hydrated, setHydrated] = useState(false);
   const [saveOpen, setSaveOpen] = useState(false);
   const [savedId, setSavedId] = useState(null);
+  const [projectsOpen, setProjectsOpen] = useState(false);
+
+  // ─── Hydratation d'un projet venant de la DB → reconstruit l'état runtime ───
+  function loadProjectFromDb(project) {
+    // Items = verbatims bruts (sans classification)
+    const dbItems = (project.verbatims || []).map((v, i) => ({
+      id: v.external_id || String(v.id),
+      verbatim: v.text || "",
+      ...(v.metadata || {}),
+      _dbId: v.id,
+    }));
+    // Enriched = items + leurs classifications agrégées en multi-label
+    const enrichedItems = dbItems.map((it, i) => {
+      const v = project.verbatims[i];
+      const cls = v.classifications || [];
+      const primary = cls[0] || null;
+      return {
+        ...it,
+        idx: i,
+        category: primary?.cluster_label || "UNSURE",
+        subCategory: primary?.subcluster_label || null,
+        confidence: primary?.confidence_cluster || 0,
+        confidence_cluster: primary?.confidence_cluster || 0,
+        confidence_subcluster: primary?.confidence_subcluster || 0,
+        categories: cls.map((c) => ({
+          cluster_id: String(c.cluster_id || ""),
+          cluster_label: c.cluster_label,
+          subcluster_id: c.subcluster_id ? String(c.subcluster_id) : null,
+          subcluster_label: c.subcluster_label,
+          confidence_cluster: c.confidence_cluster,
+          confidence_subcluster: c.confidence_subcluster,
+          scores: c.scores || null,
+        })),
+        tonality: v.metadata?.tonality || null,
+        psychoProfile: v.metadata?.psychoProfile || null,
+        pad: v.metadata?.pad || null,
+        biais: v.metadata?.biais || [],
+        motivations: v.metadata?.motivations || [],
+        signaux: v.metadata?.signaux || [],
+        _classifier: v.metadata?._classifier || "embed+bm25",
+      };
+    });
+
+    setItems(dbItems);
+    setEnriched(enrichedItems);
+    setTaxo(project.taxo_snapshot || null);
+    setContexte(project.contexte || "");
+    setMode(project.mode || "embed");
+    setSavedId(project.id);
+    // Sauter directement à la phase Résultats si la classification est faite
+    setPhase(enrichedItems.length > 0 ? "results" : "discover");
+  }
 
   // Hydratation initiale depuis localStorage
   useEffect(() => {
@@ -112,6 +165,14 @@ export default function App() {
               ✓ id {savedId}
             </span>
           )}
+          {/* Liste des projets DB */}
+          <button
+            onClick={() => setProjectsOpen(true)}
+            style={{ ...buttonSecondary, padding: "6px 12px", fontSize: 11 }}
+            title="Lister, ouvrir ou supprimer les projets sauvegardés en base"
+          >
+            📂 Mes projets
+          </button>
           {/* Sauvegarde accessible depuis n'importe quelle phase, dès qu'il y a quelque chose à persister */}
           <button
             onClick={() => setSaveOpen(true)}
@@ -140,6 +201,11 @@ export default function App() {
         contexte={contexte}
         mode={mode}
         stats={null}
+      />
+      <ProjectsListModal
+        open={projectsOpen}
+        onClose={() => setProjectsOpen(false)}
+        onOpen={loadProjectFromDb}
       />
 
       <main style={{ maxWidth: 1200, margin: "0 auto", padding: 24 }}>
