@@ -7,6 +7,10 @@ import {
   tokenize, buildBM25Index, buildPrototypes, fetchEmbeddings, classifyVerbatim,
   meanNormalize, splitSentences, UNCLASSIFIED_CLUSTER, isUnclassified,
 } from "../lib/classifier.js";
+import {
+  POSITIVE_ANCHORS, NEGATIVE_ANCHORS,
+  buildSentimentCentroids, sentimentDelta, computeTonality,
+} from "../lib/sentiment.js";
 import { logInfo, logOk, logErr, logWarn, logApi, logDbg } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
 import {
@@ -102,10 +106,13 @@ export default function PhaseClassify({
         logDbg(`[protos] cluster "${p.label}" → ${p.protoTexts.length} ancres (${p.protoTexts[0]} + ${p.protoTexts.length - 1} exemples)`);
       });
 
-      // ─── 4. Embeddings prototypes (centroide) ───────────────────────────
+      // ─── 4. Embeddings prototypes + ancres de sentiment (centroides) ────
       setStage("embed-protos");
-      const allProtoTexts = [...flatClusterTexts, ...flatSubTexts];
-      logApi(`[embed] POST /api/embed/embed pour ${allProtoTexts.length} textes-prototypes`);
+      // On embed prototypes + ancres positives + ancres négatives en UN SEUL appel
+      // pour profiter du batch (les ancres sentiment sont fixes par run).
+      const sentimentTexts = [...POSITIVE_ANCHORS, ...NEGATIVE_ANCHORS];
+      const allProtoTexts = [...flatClusterTexts, ...flatSubTexts, ...sentimentTexts];
+      logApi(`[embed] POST /api/embed/embed pour ${allProtoTexts.length} textes-prototypes (+ ${sentimentTexts.length} ancres de sentiment)`);
       setProgress({ done: 0, total: allProtoTexts.length });
       const tProto = Date.now();
       const allProtoEmbs = await fetchEmbeddings(allProtoTexts, {
@@ -116,9 +123,17 @@ export default function PhaseClassify({
       });
       logOk(`[embed] ${allProtoEmbs.length} embeddings calculés en ${Date.now() - tProto}ms (dim=${allProtoEmbs[0]?.length || 0})`);
 
+      // Centroides sentiment positif / négatif
+      const sentimentStartIdx = flatClusterTexts.length + flatSubTexts.length;
+      const posEmbs = allProtoEmbs.slice(sentimentStartIdx, sentimentStartIdx + POSITIVE_ANCHORS.length);
+      const negEmbs = allProtoEmbs.slice(sentimentStartIdx + POSITIVE_ANCHORS.length);
+      const sentimentCentroids = buildSentimentCentroids(posEmbs, negEmbs);
+      logInfo(`[sentiment] Centroides pos/neg calculés (${POSITIVE_ANCHORS.length} ancres+, ${NEGATIVE_ANCHORS.length} ancres−)`);
+
       // Centroide par cluster
       const flatClusterEmbs = allProtoEmbs.slice(0, flatClusterTexts.length);
-      const flatSubEmbs = allProtoEmbs.slice(flatClusterTexts.length);
+      // Borné car allProtoEmbs contient maintenant aussi les ancres sentiment à la fin
+      const flatSubEmbs = allProtoEmbs.slice(flatClusterTexts.length, flatClusterTexts.length + flatSubTexts.length);
       const clusterEmbs = clusterRanges.map(({ start, end }) =>
         meanNormalize(flatClusterEmbs.slice(start, end))
       );
@@ -186,7 +201,9 @@ export default function PhaseClassify({
       logInfo(`[classify] Démarrage classification SENTENCE-LEVEL multi-label (ratio ${MULTI_RATIO}) sur ${allSentences.length} phrases`);
 
       // Classifie chaque phrase, accumule par verbatim un Map<key, labelMaxConf>
+      // + collecte les deltas de sentiment par phrase pour agrégation finale
       const verbatimLabels = items.map(() => new Map());
+      const verbatimSentDeltas = items.map(() => []); // [{ delta, sim_pos, sim_neg }]
       const verbatimDebug = items.map(() => []); // pour les logs détaillés sur les premiers verbatims
 
       for (let si = 0; si < allSentences.length; si++) {
@@ -206,6 +223,11 @@ export default function PhaseClassify({
           threshold: CONFIDENCE_THRESHOLD,
           ratio: MULTI_RATIO,
         });
+        // Sentiment de la phrase (delta + sims pour debug)
+        const sentRes = sentimentDelta(sentEmbs[si], sentimentCentroids);
+        if (sentRes && typeof sentRes === "object") {
+          verbatimSentDeltas[vIdx].push(sentRes);
+        }
         // Aggrégation par (cluster_id, subcluster_id) — max confidence.
         // On NE collecte PAS les labels "Non classé" ici : on les déduira en sortie
         // (si après agrégation, aucun label métier n'a été retenu → Non classé).
@@ -281,6 +303,9 @@ export default function PhaseClassify({
           }
         }
 
+        // ─── Calcul de tonalité (texte + note) ────────────────────────
+        const ton = computeTonality(verbatimSentDeltas[i], v?.note);
+
         // Forme de l'item enrichi
         const primary = sortedLabels[0] || null;
         enriched.push({
@@ -302,7 +327,9 @@ export default function PhaseClassify({
             confidence_subcluster: l.confidence_subcluster,
             scores: l.scores,
           })),
-          tonality: null,
+          tonality: ton.tonality,
+          tonality_source: ton.source,
+          tonality_delta: ton.delta,
           psychoProfile: null,
           pad: null,
           biais: [],
@@ -311,6 +338,7 @@ export default function PhaseClassify({
           _classifier: "embed+bm25-sentence",
           _scores: primary?.scores || null,
           _sentenceCount: sentencesByVerb[i]?.length || 0,
+          _sentimentDebug: { n_sentences: ton.n_sentences, avg_delta: ton.avg_delta, has_strong_pos: ton.has_strong_pos, has_strong_neg: ton.has_strong_neg },
         });
 
         if ((i + 1) % 100 === 0 || i === items.length - 1) {
@@ -343,6 +371,18 @@ export default function PhaseClassify({
       sorted.forEach(([label, count]) => {
         const pct = Math.round((count * 100) / items.length);
         logInfo(`  ${label.padEnd(30)} ${String(count).padStart(5)} (${pct}%)`);
+      });
+
+      // Distribution de tonalité
+      const tonCount = enriched.reduce((acc, e) => {
+        acc[e.tonality || "?"] = (acc[e.tonality || "?"] || 0) + 1;
+        return acc;
+      }, {});
+      logInfo("──────── Distribution tonalité ────────");
+      ["positif", "neutre", "négatif", "mixte"].forEach((t) => {
+        const c = tonCount[t] || 0;
+        const pct = Math.round((c * 100) / Math.max(items.length, 1));
+        logInfo(`  ${t.padEnd(10)} ${String(c).padStart(5)} (${pct}%)`);
       });
       logOk(`════════ Terminé en ${(stat.elapsedMs / 1000).toFixed(1)}s ════════`);
       logOk(`  Couverture : ${stat.coverage}% · UNSURE : ${stat.unsure}`);

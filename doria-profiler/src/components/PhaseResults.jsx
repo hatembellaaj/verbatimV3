@@ -75,7 +75,7 @@ export default function PhaseResults({
   function exportCSV() {
     const headers = [
       "id", "verbatim", "note", "date", "profil", "source",
-      "category", "subCategory", "tonality", "confidence",
+      "category", "subCategory", "tonality", "tonality_source", "tonality_delta", "confidence",
       // Multi-label : tableau aplati en pipe-séparé
       "all_categories", "all_subcategories", "labels_count",
       "psychoProfile", "valence", "arousal", "dominance",
@@ -87,7 +87,9 @@ export default function PhaseResults({
         : [{ cluster_label: i.category, subcluster_label: i.subCategory }];
       return [
         i.id, i.verbatim, i.note ?? "", i.date ?? "", i.profil ?? "", i.source ?? "",
-        i.category ?? "", i.subCategory ?? "", i.tonality ?? "", i.confidence ?? 0,
+        i.category ?? "", i.subCategory ?? "", i.tonality ?? "",
+        i.tonality_source ?? "", i.tonality_delta ?? "",
+        i.confidence ?? 0,
         labels.map((l) => l.cluster_label || "").join("|"),
         labels.map((l) => l.subcluster_label || "").join("|"),
         labels.length,
@@ -655,13 +657,37 @@ function DrillPanel({ item, onClose, onCorrect, taxo }) {
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10, fontSize: 12 }}>
               <Field label="Catégorie principale" value={item.category} />
               <Field label="Sous-catégorie" value={item.subCategory} />
-              <Field label="Tonalité" value={item.tonality} color={item.tonality === "positif" ? POS : item.tonality === "négatif" ? NEG : NEUTRAL} />
+              <Field
+                label="Tonalité"
+                value={item.tonality}
+                color={item.tonality === "positif" ? POS : item.tonality === "négatif" ? NEG : item.tonality === "mixte" ? ACCENT : NEUTRAL}
+              />
               <Field label="Confiance" value={(item.confidence ?? 0).toFixed(2)} />
               <Field label="Profil psy." value={item.psychoProfile} color={ACCENT} />
               <Field label="Note" value={item.note ?? "—"} />
               <Field label="Date" value={item.date ?? "—"} />
               <Field label="Source" value={item.source ?? "—"} />
             </div>
+            {/* Détail tonalité : source + delta, utile pour auditer le classement */}
+            {(item.tonality_source || item.tonality_delta != null) && (
+              <div style={{
+                marginTop: 8, padding: "6px 10px", background: PANEL_2,
+                border: `1px solid ${BORDER}`, borderRadius: 6,
+                fontSize: 10, color: MUTED, fontFamily: "ui-monospace, monospace",
+                display: "flex", gap: 12, flexWrap: "wrap",
+              }}>
+                <span>tonality_source : <b style={{ color: TEAL }}>{item.tonality_source || "—"}</b></span>
+                <span>delta : <b style={{ color: TEXT }}>{(item.tonality_delta ?? 0).toFixed(3)}</b></span>
+                {item._sentimentDebug && (
+                  <>
+                    <span>phrases : {item._sentimentDebug.n_sentences}</span>
+                    <span>avg : {(item._sentimentDebug.avg_delta ?? 0).toFixed(3)}</span>
+                    {item._sentimentDebug.has_strong_pos && <span style={{ color: POS }}>+fort</span>}
+                    {item._sentimentDebug.has_strong_neg && <span style={{ color: NEG }}>−fort</span>}
+                  </>
+                )}
+              </div>
+            )}
             {Array.isArray(item.categories) && item.categories.length > 0 && (
               <div style={{ marginTop: 12 }}>
                 <div style={{ fontSize: 11, color: MUTED, marginBottom: 6, textTransform: "uppercase", letterSpacing: 0.5 }}>

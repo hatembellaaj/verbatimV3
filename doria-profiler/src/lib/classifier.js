@@ -55,15 +55,22 @@ export function splitSentences(text, { minWords = 3, maxWordsPerChunk = 18 } = {
   const raw = String(text).trim();
   if (!raw) return [];
 
-  // Étape 1 : split sur ponctuations fortes
-  const strongChunks = raw
+  // Étape 1 : split sur ponctuations fortes ET sur conjonctions de contraste FR.
+  // Les conjonctions ("mais", "cependant", …) sont cruciales pour isoler les
+  // bascules de sentiment dans un même verbatim ("super, mais l'attente était nulle").
+  const contrastSplit = raw
+    // ponctuations fortes
     .split(/(?<=[.!?;…])\s+|\n+/)
+    // puis conjonctions de contraste (insensible casse)
+    .flatMap((s) =>
+      s.split(/\s+(?:mais|cependant|toutefois|néanmoins|en revanche|par contre|sauf que)\s+/i),
+    )
     .map((s) => s.trim())
     .filter(Boolean);
 
-  // Étape 2 : si un chunk est trop long, on coupe aussi sur les virgules
+  // Étape 2 : si un chunk est encore trop long, on coupe sur les virgules
   const finalChunks = [];
-  for (const chunk of strongChunks) {
+  for (const chunk of contrastSplit) {
     const words = chunk.split(/\s+/).filter(Boolean);
     if (words.length <= maxWordsPerChunk) {
       finalChunks.push(chunk);
