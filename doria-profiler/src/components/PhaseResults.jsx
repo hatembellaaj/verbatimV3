@@ -957,16 +957,19 @@ function buildStats(items, taxo, psycho) {
   // Par catégorie — chaque verbatim ajoute 1 à chacune de ses catégories UNIQUES
   // (déduplication au niveau cluster : un verbatim avec 2 sous-clusters de
   // "Attractions" compte 1 seule fois pour Attractions mais 2 fois dans subDist).
+  // Normalise la tonalité en clés courtes utilisées par les compteurs/graphes
+  const TON_KEY = { "positif": "pos", "négatif": "neg", "neutre": "neutre", "mixte": "mixte" };
   const catMap = {};
   items.forEach((i) => {
     const labels = expandLabels(i);
     const seenClusters = new Set();
+    const tonKey = TON_KEY[i.tonality] || "neutre";
     for (const { category, subCategory } of labels) {
       const c = category;
       if (!catMap[c]) catMap[c] = { name: c, count: 0, pos: 0, neg: 0, neutre: 0, mixte: 0, subDist: {} };
       if (!seenClusters.has(c)) {
         catMap[c].count++;
-        catMap[c][i.tonality || "neutre"] = (catMap[c][i.tonality || "neutre"] || 0) + 1;
+        catMap[c][tonKey] = (catMap[c][tonKey] || 0) + 1;
         seenClusters.add(c);
       }
       const sub = subCategory || "—";
