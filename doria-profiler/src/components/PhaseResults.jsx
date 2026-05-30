@@ -573,14 +573,28 @@ function DrillPanel({ item, onClose, onCorrect, taxo }) {
 
   function updateDraft(idx, key, value) {
     setDraftCats((d) => {
-      const next = d.map((x, i) => i === idx ? { ...x, [key]: value } : x);
+      let next = d.map((x, i) => i === idx ? { ...x, [key]: value } : x);
       // Si on change le cluster, on reset le sous-cluster pour éviter incohérence
       if (key === "cluster_label") next[idx].subcluster_label = "";
+      // EXCLUSIVITÉ "Non classé" : si l'utilisateur choisit Non classé,
+      // toutes les autres lignes sont supprimées. Si une autre catégorie est
+      // choisie alors que Non classé est présent, Non classé est supprimé.
+      if (key === "cluster_label") {
+        if (value === "Non classé") {
+          next = [{ cluster_label: "Non classé", subcluster_label: "" }];
+        } else if (value) {
+          next = next.filter((x) => x.cluster_label !== "Non classé");
+        }
+      }
       return next;
     });
   }
   function addDraft() {
-    setDraftCats((d) => [...d, { cluster_label: "", subcluster_label: "" }]);
+    setDraftCats((d) => {
+      // Si "Non classé" est seul, on bloque (exclusif). Sinon on ajoute.
+      if (d.some((x) => x.cluster_label === "Non classé")) return d;
+      return [...d, { cluster_label: "", subcluster_label: "" }];
+    });
   }
   function removeDraft(idx) {
     setDraftCats((d) => d.filter((_, i) => i !== idx));

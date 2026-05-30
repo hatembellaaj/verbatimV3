@@ -1,5 +1,36 @@
 // Classification hybride — embeddings (cosinus) + BM25 (lexical)
 // Pas de LLM dans la boucle ; coût quasi nul.
+
+// Cluster réceptacle pour les verbatims qui ne matchent aucun cluster métier.
+// EXCLUSIF : un verbatim qui tombe dans ce cluster ne peut pas être dans un autre.
+// Pas d'ancres, pas dans les prototypes (la sélection se fait par défaut quand
+// aucun cluster métier ne dépasse le seuil).
+export const UNCLASSIFIED_CLUSTER = "Non classé";
+
+// Garantit que la taxo contient le cluster "Non classé" en dernier.
+// À appeler après toute modification du tree (génération IA, manuel, chargement DB).
+export function ensureUnclassified(taxo) {
+  if (!taxo || !Array.isArray(taxo.categories)) {
+    return { ...(taxo || {}), categories: [{ name: UNCLASSIFIED_CLUSTER, subCategories: [], _readonly: true }] };
+  }
+  const existing = taxo.categories.find((c) => c.name === UNCLASSIFIED_CLUSTER);
+  if (existing) {
+    // Marque readonly et place en dernier
+    const others = taxo.categories.filter((c) => c.name !== UNCLASSIFIED_CLUSTER);
+    return { ...taxo, categories: [...others, { ...existing, _readonly: true, subCategories: [], anchors: [], subAnchors: {} }] };
+  }
+  return {
+    ...taxo,
+    categories: [
+      ...taxo.categories,
+      { name: UNCLASSIFIED_CLUSTER, subCategories: [], _readonly: true, anchors: [], subAnchors: {} },
+    ],
+  };
+}
+
+export function isUnclassified(name) {
+  return name === UNCLASSIFIED_CLUSTER;
+}
 //
 // Pipeline :
 //   1. Construire prototypes (texte représentatif) par cluster + sous-cluster.
@@ -150,7 +181,10 @@ function minmax(arr) {
 // Le 1er texte est toujours le nom (utilisé seul pour BM25).
 // ───────────────────────────────────────────────────────────────────────────
 export function buildPrototypes(taxo) {
-  const clusters = (taxo?.categories || []).map((c, ci) => {
+  // On exclut le cluster "Non classé" — il n'a pas d'ancres et ne participe pas
+  // à la sélection. Il sera assigné par défaut quand aucun autre ne matche.
+  const sourceCategories = (taxo?.categories || []).filter((c) => !isUnclassified(c.name));
+  const clusters = sourceCategories.map((c, ci) => {
     const clusterAnchors = Array.isArray(c.anchors) ? c.anchors : [];
     const subs = (c.subCategories || []).map((s, si) => {
       const subAnchorList = c.subAnchors?.[s];
@@ -273,18 +307,20 @@ export function classifyVerbatim({
     }))
     .sort((a, b) => b.combined - a.combined);
 
-  // ─── UNSURE si le meilleur score est sous le seuil absolu ────────────────
+  // ─── "Non classé" si le meilleur score est sous le seuil absolu ─────────
+  // Cluster EXCLUSIF : un seul label = Non classé, jamais combiné.
   if (topScore < threshold) {
+    const unclassifiedLabel = {
+      cluster: { idx: -1, label: UNCLASSIFIED_CLUSTER, id: slug(UNCLASSIFIED_CLUSTER) },
+      subcluster: null,
+      confidence_cluster: round3(topScore),
+      confidence_subcluster: 0,
+      scores: { embed: round3(cosScores[topIdx] || 0), bm25: round3(bm25Scores[topIdx] || 0) },
+    };
     return {
-      primary: {
-        cluster: { idx: -1, label: "UNSURE", id: "UNSURE" },
-        subcluster: null,
-        confidence_cluster: round3(topScore),
-        confidence_subcluster: 0,
-        scores: { embed: round3(cosScores[topIdx]), bm25: round3(bm25Scores[topIdx]) },
-      },
-      labels: [],
-      debug: { topScore: round3(topScore), threshold, breakdown: breakdown.slice(0, 5) },
+      primary: unclassifiedLabel,
+      labels: [unclassifiedLabel],
+      debug: { topScore: round3(topScore), threshold, breakdown: breakdown.slice(0, 5), reason: "below_threshold" },
     };
   }
 

@@ -5,7 +5,7 @@
 import React, { useState, useRef, useEffect } from "react";
 import {
   tokenize, buildBM25Index, buildPrototypes, fetchEmbeddings, classifyVerbatim,
-  meanNormalize, splitSentences,
+  meanNormalize, splitSentences, UNCLASSIFIED_CLUSTER, isUnclassified,
 } from "../lib/classifier.js";
 import { logInfo, logOk, logErr, logWarn, logApi, logDbg } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
@@ -206,8 +206,11 @@ export default function PhaseClassify({
           threshold: CONFIDENCE_THRESHOLD,
           ratio: MULTI_RATIO,
         });
-        // Aggrégation par (cluster_id, subcluster_id) — max confidence
+        // Aggrégation par (cluster_id, subcluster_id) — max confidence.
+        // On NE collecte PAS les labels "Non classé" ici : on les déduira en sortie
+        // (si après agrégation, aucun label métier n'a été retenu → Non classé).
         for (const lbl of result.labels) {
+          if (isUnclassified(lbl.cluster.label)) continue;
           const key = `${lbl.cluster.id}::${lbl.subcluster?.id || ""}`;
           const existing = verbatimLabels[vIdx].get(key);
           if (!existing || lbl.confidence_cluster > existing.confidence_cluster) {
@@ -231,11 +234,21 @@ export default function PhaseClassify({
         if (cancelRef.current) break;
         const v = items[i];
         const labelMap = verbatimLabels[i];
-        const sortedLabels = [...labelMap.values()]
+        let sortedLabels = [...labelMap.values()]
           .sort((a, b) => b.confidence_cluster - a.confidence_cluster);
 
+        // Si aucun cluster métier ne matche → assigner EXCLUSIVEMENT "Non classé"
         const isUnsure = sortedLabels.length === 0;
-        if (isUnsure) unsureCount++;
+        if (isUnsure) {
+          unsureCount++;
+          sortedLabels = [{
+            cluster: { idx: -1, label: UNCLASSIFIED_CLUSTER, id: "non_classe" },
+            subcluster: null,
+            confidence_cluster: 0,
+            confidence_subcluster: 0,
+            scores: null,
+          }];
+        }
         if (sortedLabels.length > 1) multiLabelCount++;
         totalLabels += Math.max(sortedLabels.length, 1);
 

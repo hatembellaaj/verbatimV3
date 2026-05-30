@@ -6,6 +6,7 @@ import { sample, parseJSON } from "../lib/utils.js";
 import { callClaude } from "../api/claude.js";
 import { logInfo, logOk, logErr } from "../lib/logger.js";
 import CategoryPickerModal from "./CategoryPickerModal.jsx";
+import { ensureUnclassified, UNCLASSIFIED_CLUSTER, isUnclassified } from "../lib/classifier.js";
 import {
   PANEL_2, BORDER, MUTED, TEXT, GOLD, TEAL, ACCENT,
   panelStyle, buttonPrimary, buttonSecondary, inputStyle,
@@ -50,8 +51,9 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
       });
       const parsed = parseJSON(raw);
       if (!parsed?.categories?.length) throw new Error("Réponse IA invalide (pas de catégories)");
-      setTaxo({ categories: parsed.categories });
-      logOk(`[discover] ${parsed.categories.length} clusters proposés`);
+      // Ajoute le cluster réceptacle "Non classé" en dernier
+      setTaxo(ensureUnclassified({ categories: parsed.categories }));
+      logOk(`[discover] ${parsed.categories.length} clusters proposés (+ "${UNCLASSIFIED_CLUSTER}" auto)`);
     } catch (e) {
       logErr(`[discover] ${e.message}`);
       setError(e.message);
@@ -60,11 +62,16 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
     }
   }
 
-  function manualStart() { setTaxo({ categories: [] }); setError(null); }
+  function manualStart() { setTaxo(ensureUnclassified({ categories: [] })); setError(null); }
   function reset() { setTaxo(null); setError(null); }
 
   function addCluster() {
-    setTaxo({ ...taxo, categories: [...taxo.categories, { name: "Nouveau cluster", subCategories: [] }] });
+    // Insère AVANT le cluster "Non classé" pour qu'il reste toujours dernier
+    const others = taxo.categories.filter((c) => !isUnclassified(c.name));
+    const unclassified = taxo.categories.find((c) => isUnclassified(c.name));
+    const next = [...others, { name: "Nouveau cluster", subCategories: [] }];
+    if (unclassified) next.push(unclassified);
+    setTaxo({ ...taxo, categories: next });
   }
   function renameCluster(idx, name) {
     setTaxo({ ...taxo, categories: taxo.categories.map((c, i) => i === idx ? { ...c, name } : c) });
@@ -202,32 +209,48 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
           )}
 
           <div style={{ display: "grid", gap: 10 }}>
-            {taxo.categories.map((cluster, cIdx) => (
+            {taxo.categories.map((cluster, cIdx) => {
+              const readonly = isUnclassified(cluster.name);
+              return (
               <div key={cIdx} style={{
-                background: PANEL_2, border: `1px solid ${BORDER}`,
+                background: PANEL_2,
+                border: `1px ${readonly ? "dashed" : "solid"} ${readonly ? MUTED : BORDER}`,
                 borderRadius: 10, padding: 12,
+                opacity: readonly ? 0.85 : 1,
               }}>
                 {/* ── Ligne cluster ── */}
-                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
-                  <span style={{ color: GOLD, fontSize: 16 }}>📁</span>
-                  <input
-                    value={cluster.name}
-                    onChange={(e) => renameCluster(cIdx, e.target.value)}
-                    style={{ ...inputStyle, flex: 1, fontWeight: 600, color: TEXT }}
-                    placeholder="Nom du cluster"
-                  />
-                  <button
-                    onClick={() => removeCluster(cIdx)}
-                    style={{
-                      ...buttonSecondary, padding: "4px 10px", fontSize: 11,
-                      color: "#FCA5A5", borderColor: "#EF4444",
-                    }}
-                  >
-                    Supprimer
-                  </button>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: readonly ? 0 : 8 }}>
+                  <span style={{ color: readonly ? MUTED : GOLD, fontSize: 16 }}>{readonly ? "🗃️" : "📁"}</span>
+                  {readonly ? (
+                    <span style={{ flex: 1, fontWeight: 600, color: MUTED, fontStyle: "italic" }}>
+                      {cluster.name}
+                      <span style={{ marginLeft: 10, fontSize: 11, color: ACCENT, fontWeight: 400 }}>
+                        cluster réceptacle automatique (exclusif, non éditable)
+                      </span>
+                    </span>
+                  ) : (
+                    <>
+                      <input
+                        value={cluster.name}
+                        onChange={(e) => renameCluster(cIdx, e.target.value)}
+                        style={{ ...inputStyle, flex: 1, fontWeight: 600, color: TEXT }}
+                        placeholder="Nom du cluster"
+                      />
+                      <button
+                        onClick={() => removeCluster(cIdx)}
+                        style={{
+                          ...buttonSecondary, padding: "4px 10px", fontSize: 11,
+                          color: "#FCA5A5", borderColor: "#EF4444",
+                        }}
+                      >
+                        Supprimer
+                      </button>
+                    </>
+                  )}
                 </div>
 
-                {/* ── Sous-clusters ── */}
+                {/* ── Sous-clusters (cachés pour Non classé) ── */}
+                {!readonly && (
                 <div style={{ display: "grid", gap: 6, paddingLeft: 24 }}>
                   {cluster.subCategories.map((sub, sIdx) => (
                     <div key={sIdx} style={{ display: "flex", alignItems: "center", gap: 6 }}>
@@ -257,8 +280,10 @@ export default function PhaseDiscover({ items, contexte, initialTaxo, onValidate
                     + Ajouter un sous-cluster
                   </button>
                 </div>
+                )}
               </div>
-            ))}
+              );
+            })}
 
             <button onClick={addCluster} style={{ ...buttonSecondary, padding: "8px 14px" }}>
               + Ajouter un cluster

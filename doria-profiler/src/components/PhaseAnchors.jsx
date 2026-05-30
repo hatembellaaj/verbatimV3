@@ -9,6 +9,7 @@ import React, { useState, useRef } from "react";
 import { callClaude, MOCK_AI } from "../api/claude.js";
 import { promptGenerateAnchorsForCluster } from "../lib/prompts.js";
 import { parseJSON, pLimit } from "../lib/utils.js";
+import { isUnclassified } from "../lib/classifier.js";
 import { logInfo, logOk, logErr, logWarn, logLlm, logDbg } from "../lib/logger.js";
 import ConsolePanel from "./ConsolePanel.jsx";
 import {
@@ -32,7 +33,9 @@ export default function PhaseAnchors({ taxo, contexte, onValidate, onBack, onTax
       return;
     }
     setRunning(true); setError(null); cancelRef.current = false;
-    const N = taxo.categories.length;
+    // On exclut "Non classé" — c'est le cluster réceptacle, pas besoin d'ancres
+    const generatable = taxo.categories.filter((c) => !isUnclassified(c.name));
+    const N = generatable.length;
     setProgress({ done: 0, total: N });
     logLlm(`[anchors] Génération par LLM — ${N} clusters en parallèle (concurrency=2)`);
     const t0 = Date.now();
@@ -41,7 +44,7 @@ export default function PhaseAnchors({ taxo, contexte, onValidate, onBack, onTax
     let done = 0;
     const failures = [];
 
-    const tasks = taxo.categories.map((c, idx) => limit(async () => {
+    const tasks = generatable.map((c, idx) => limit(async () => {
       if (cancelRef.current) return c;
       try {
         const tStart = Date.now();
@@ -70,7 +73,13 @@ export default function PhaseAnchors({ taxo, contexte, onValidate, onBack, onTax
       }
     }));
 
-    const updatedCategories = await Promise.all(tasks);
+    const generatedResults = await Promise.all(tasks);
+    // Merge avec les catégories non-generatable (Non classé) qui restent intactes
+    const updatedCategories = taxo.categories.map((c) => {
+      if (isUnclassified(c.name)) return c;
+      const updated = generatedResults.find((g) => g.name === c.name);
+      return updated || c;
+    });
     if (failures.length === N) {
       setError(`Tous les appels ont échoué (${N}/${N}). Voir la console.`);
       setRunning(false);
@@ -176,10 +185,12 @@ export default function PhaseAnchors({ taxo, contexte, onValidate, onBack, onTax
     (s, c) => s + Object.values(c.subAnchors || {}).reduce((ss, a) => ss + a.length, 0), 0,
   );
   const hasAny = totalAnchors > 0 || totalSubAnchors > 0;
-  const minClusterAnchors = (taxo?.categories || [])
+  // On EXCLUT "Non classé" du check : ce cluster n'a jamais d'ancres (réceptacle).
+  const clustersRequiringAnchors = (taxo?.categories || []).filter((c) => !isUnclassified(c.name));
+  const minClusterAnchors = clustersRequiringAnchors
     .map((c) => (c.anchors || []).filter((a) => (a || "").trim()).length)
     .reduce((a, b) => Math.min(a, b), Infinity);
-  const allClustersHaveAnchors = minClusterAnchors >= 1;
+  const allClustersHaveAnchors = clustersRequiringAnchors.length === 0 || minClusterAnchors >= 1;
   const pct = progress.total ? Math.round((progress.done / progress.total) * 100) : 0;
 
   return (
@@ -240,7 +251,27 @@ export default function PhaseAnchors({ taxo, contexte, onValidate, onBack, onTax
       </div>
 
       {/* ── Arbre éditable cluster par cluster ──────────────────────────── */}
-      {(taxo?.categories || []).map((cluster, cIdx) => (
+      {(taxo?.categories || []).map((cluster, cIdx) => {
+        // Cluster "Non classé" : affiché en grisé, pas d'ancres requises
+        if (isUnclassified(cluster.name)) {
+          return (
+            <div key={cIdx} style={{ ...panelStyle, borderStyle: "dashed", opacity: 0.7 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ color: MUTED, fontSize: 16 }}>🗃️</span>
+                <span style={{ fontWeight: 600, fontSize: 15, color: MUTED, fontStyle: "italic" }}>
+                  {cluster.name}
+                </span>
+                <span style={{ fontSize: 11, color: ACCENT, marginLeft: 8 }}>
+                  Cluster réceptacle automatique — pas d'ancres requises
+                </span>
+              </div>
+              <div style={{ marginTop: 6, fontSize: 11, color: MUTED, fontStyle: "italic" }}>
+                Reçoit les verbatims qui ne matchent aucun autre cluster (exclusif).
+              </div>
+            </div>
+          );
+        }
+        return (
         <div key={cIdx} style={panelStyle}>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
             <span style={{ color: GOLD, fontSize: 16 }}>📁</span>
@@ -324,7 +355,8 @@ export default function PhaseAnchors({ taxo, contexte, onValidate, onBack, onTax
             </div>
           )}
         </div>
-      ))}
+        );
+      })}
 
       {/* ── Console + nav ────────────────────────────────────────────────── */}
       <ConsolePanel title="Console — Génération des ancres" defaultOpen={true} maxHeight={260} />
